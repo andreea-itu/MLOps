@@ -2,7 +2,7 @@ AWS CLI
 -------
 
 # Specify the username for the new IAM user
-USER_NAME="mlops"
+USER_NAME="cicd-user"
 
 # Create IAM User and capture the response
 USER_RESPONSE=$(aws iam create-user --user-name "$USER_NAME")
