@@ -5,12 +5,12 @@ terraform {
       version = "~> 6.0"
     }
   }
+  backend "s3" {
+  }
 }
 
 provider "aws" {
-  region  = "eu-west-1"
-  profile = "default"
-  #   skip_credentials_validation = true
+  region = var.aws_region
 }
 
 
