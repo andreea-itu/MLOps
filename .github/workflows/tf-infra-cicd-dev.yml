@@ -2,19 +2,41 @@ name: tf-infra-cicd-dev
 
 # Controls when the workflow will run
 on:
+  push:
+    branches: ["main"]
+    paths:
+      - "mlops/terraform/**"
+      - ".github/workflows/tf-infra-cicd-dev.yml"
   # Triggers the workflow on push or pull request events but only for the "main" branch
   pull_request:
     branches: ["main"]
+    paths:
+      - "mlops/terraform/**"
+      - ".github/workflows/tf-infra-cicd-dev.yml"
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: tf-dev-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: 1.9.5
+  AWS_REGION: eu-west-1
+  WORKING_DIR: mlops/terraform
+
 jobs:
-  terraform-validate-plan-apply:
+  plan:
+    name: Terraform Plan
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: mlops/terraform
+        working-directory: ${{ env.WORKING_DIR }}
 
     steps:
       - name: Checkout repository
@@ -22,16 +44,18 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: eu-west-1
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Terraform Format
-        run: terraform fmt -check
+        run: terraform fmt -check -recursive
         continue-on-error: true
 
       - name: Terraform Init
@@ -41,7 +65,46 @@ jobs:
         run: terraform validate -no-color
 
       - name: Terraform Plan
-        run: terraform plan -no-color --var-file='environments/dev.tfvars'
+        run: terraform plan -no-color -var-file=environments/dev.tfvars -out=tfplan
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-dev
+          path: ${{ env.WORKING_DIR }}/tfplan
+          retention-days: 2
 
       - name: Terraform Apply
         run: terraform apply --var-file='environments/dev.tfvars' -auto-approve
+
+  apply:
+    name: Terraform Apply
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: dev
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Terraform Init
+        run: terraform init -backend-config=backends/dev.conf
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-dev
+          path: ${{ env.WORKING_DIR }}
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
