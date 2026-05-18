@@ -16,3 +16,9 @@ data/*.db-journal
 # keep CSV samples + sample frame in repo (the deliverable), ignore logs
 *.log
 .DS_Store
+
+*.tfstate
+*.tfstate.*
+.terraform/
+crash.log
+crash.*.log
