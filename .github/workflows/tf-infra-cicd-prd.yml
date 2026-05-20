@@ -1,0 +1,80 @@
+name: tf-infra-cicd-prd
+
+on:
+  push:
+    branches: ["release/**"]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/tf-infra-cicd-prd.yml"
+  pull_request:
+    branches: ["release/**"]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/tf-infra-cicd-prd.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: tf-prd-state
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: 1.10.5
+  AWS_REGION: eu-west-1
+  WORKING_DIR: terraform
+
+jobs:
+  plan:
+    name: Terraform Plan (prd)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - run: terraform fmt -check -recursive
+
+      - run: terraform init -backend-config=backends/prd.conf
+
+      - run: terraform validate -no-color
+
+      - run: terraform plan -no-color -var-file=environments/prd.tfvars
+
+  apply:
+    name: Terraform Apply (prd)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: prd
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - run: terraform init -backend-config=backends/prd.conf
+
+      - run: terraform apply -auto-approve -var-file=environments/prd.tfvars
