@@ -9,4 +9,12 @@ s3_buckets = [
       Project     = "mlops"
     }
   }
+  # Add second bucket
+  # {
+  #   key = "mlops-postgrade-datastore-2"
+  #   tags = {
+  #     Environment = "dev"
+  #     Project     = "mlops"
+  #   }
+  # }
 ]
