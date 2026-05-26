@@ -31,3 +31,22 @@ ecr_repositories = [
     }
   }
 ]
+
+apprunner_services = [
+  {
+    key = "app"
+    source_configuration = {
+      auto_deployments_enabled = true
+      image_repository = {
+        image_identifier      = "<account-id>.dkr.ecr.eu-west-1.amazonaws.com/app-dev:latest"
+        image_repository_type = "ECR"
+        image_configuration = {
+          port = "8080"
+        }
+      }
+    }
+    tags = {
+      Project = "mlops"
+    }
+  }
+]

@@ -31,3 +31,13 @@ variable "ecr_repositories" {
   }))
   default = []
 }
+
+variable "apprunner_services" {
+  description = "App Runner services to create."
+  type = list(object({
+    key                  = string
+    source_configuration = any
+    tags                 = optional(map(string), {})
+  }))
+  default = []
+}
