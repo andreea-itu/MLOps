@@ -1,4 +1,4 @@
-name: tf-infra-cicd-dev
+name: Infrastructure CI/CD DEV
 
 on:
   push:
@@ -53,16 +53,6 @@ jobs:
       - run: terraform validate -no-color
 
       - run: terraform plan -no-color -var-file=environments/dev.tfvars
-
-      - name: Approval
-        uses: trstringer/manual-approval@v1
-        timeout-minutes: 60
-        with:
-          secret: ${{ github.token }}
-          approvers: andreea-itu
-          issue-title: "Deploy Terraform Plan to dev"
-          issue-body: "Please review the Terraform Plan"
-          exclude-workflow-initiator-as-approver: false
 
   apply:
     name: Terraform Apply (dev)

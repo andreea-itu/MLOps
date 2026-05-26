@@ -1,4 +1,4 @@
-name: tf-infra-cicd-prd
+name: Infrastructure CI/CD PRD
 
 on:
   push:
