@@ -6,6 +6,7 @@ from model_loader import load_inference_model
 
 app = FastAPI()
 
+
 class InputData(BaseModel):
     Gender: str
     Age: int
@@ -15,16 +16,19 @@ class InputData(BaseModel):
     PastAccident: str
     AnnualPremium: float
 
+
 model = load_inference_model()
+
 
 @app.get("/")
 async def root():
     return {"health_check": "OK"}
 
+
 @app.post("/predict")
 async def predict(input_data: InputData):
-    
-        df = pd.DataFrame([input_data.model_dump().values()], 
-                          columns=input_data.model_dump().keys())
-        pred = model.predict(df)
-        return {"predicted_class": int(pred[0])}
+    df = pd.DataFrame(
+        [input_data.model_dump().values()], columns=input_data.model_dump().keys()
+    )
+    pred = model.predict(df)
+    return {"predicted_class": int(pred[0])}

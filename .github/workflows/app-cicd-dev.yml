@@ -1,22 +1,25 @@
 name: Application CI/CD
 
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
   pull_request:
     branches: ["main"]
     paths:
       - "src/**"
+      - ".github/workflows/app-cicd-dev.yml"
 
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
 
 env:
   AWS_REGION: eu-west-1
   WORKING_DIR: src
 
 jobs:
-  retrain-build-push:
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -30,26 +33,69 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: poetry
+          cache-dependency-path: src/poetry.lock
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
 
       - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      - name: Lint with Ruff
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          poetry run ruff check .
+          poetry run ruff format --check .
+
+  retrain-build-push:
+    name: Retrain, Build & Push
+    needs: lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: poetry
+          cache-dependency-path: src/poetry.lock
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Pull latest data with DVC
-        run: dvc pull
+        run: poetry run dvc pull
 
       - name: Retrain model
         run: |
-          mkdir models/
-          python main.py
+          mkdir -p models/
+          poetry run python main.py
+
+      - name: Export requirements for Docker
+        run: |
+          poetry self add poetry-plugin-export
+          poetry export --only main --without-hashes --output requirements.txt
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -58,8 +104,8 @@ jobs:
       - name: Build, tag, and push docker image to Amazon ECR
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_TAG: latest
+          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
           docker build -t $REGISTRY/$REPOSITORY:$IMAGE_TAG .
           docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG

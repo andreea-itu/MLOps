@@ -18,3 +18,16 @@ s3_buckets = [
     }
   }
 ]
+
+ecr_repositories = [
+  {
+    key = "app"
+    image_scanning_configuration = {
+      scan_on_push = true
+    }
+    tags = {
+      Environment = "dev"
+      Project     = "mlops"
+    }
+  }
+]
