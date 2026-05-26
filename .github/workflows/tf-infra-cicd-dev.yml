@@ -1,4 +1,4 @@
-name: tf-infra-cicd-dev
+name: Infrastructure CI/CD DEV
 
 on:
   push:

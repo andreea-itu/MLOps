@@ -172,6 +172,7 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
-# /data
-models/
 /data
+models/
+# Poetry
+.venv/

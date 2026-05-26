@@ -20,3 +20,24 @@ variable "s3_buckets" {
   type        = list(any)
   default     = []
 }
+
+variable "ecr_repositories" {
+  description = "ECR repositories to create."
+  type = list(object({
+    key                          = string
+    image_tag_mutability         = optional(string, "MUTABLE")
+    image_scanning_configuration = optional(map(string), {})
+    tags                         = optional(map(string), {})
+  }))
+  default = []
+}
+
+variable "apprunner_services" {
+  description = "App Runner services to create."
+  type = list(object({
+    key                  = string
+    source_configuration = any
+    tags                 = optional(map(string), {})
+  }))
+  default = []
+}

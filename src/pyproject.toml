@@ -1,0 +1,45 @@
+[tool.poetry]
+name = "mlops-app"
+version = "0.1.0"
+description = "MLOps training and serving application"
+authors = ["Andreea <you@example.com>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+dvc = "3.59.2"
+dvc-s3 = "3.2.0"
+imbalanced-learn = "0.13.0"
+mlflow = "2.22.0"
+notebook = "7.4.2"
+pandas = "2.2.3"
+scikit-learn = "1.6.1"
+joblib = "1.5.0"
+fastapi = "0.115.12"
+uvicorn = { version = "0.34.0", extras = ["standard"] }
+
+[tool.poetry.group.dev.dependencies]
+pytest = "8.3.5"
+ruff = "^0.11.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+exclude = [".venv", "data", ".dvc"]
+
+[tool.ruff.lint]
+select = ["E", "F"]          # pass 1: errors only
+# select = ["E", "F", "I"]   # pass 2: import sorting
+# select = ["E", "F", "I", "UP"]  # pass 3: pyupgrade
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"main.py" = ["T201"]              # when T201 is enabled
+"pipelines/*_main.py" = ["T201"]   # CLI scripts using print()
+
+[tool.ruff.format]
+quote-style = "double"
