@@ -1,7 +1,14 @@
-# GitHub Actions OIDC provider (one per AWS account).
-# If this already exists in your account, import it instead of creating a duplicate:
-# terraform import 'module.github_actions_app.aws_iam_openid_connect_provider.github' \
-#   arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com
+data "tls_certificate" "github" {
+  url = "https://token.actions.githubusercontent.com"
+}
+
+locals {
+  github_thumbprints = distinct([
+    for cert in data.tls_certificate.github.certificates :
+    replace(cert.sha1_fingerprint, ":", "")
+  ])
+}
+
 resource "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
 
@@ -9,10 +16,7 @@ resource "aws_iam_openid_connect_provider" "github" {
     "sts.amazonaws.com",
   ]
 
-  thumbprint_list = [
-    "6938fd4d98bab03fa30697ae76d8c80e7f0b1a0",
-    "1c58a3a8518e8759bf075b76b750d91fbf93eb52",
-  ]
+  thumbprint_list = local.github_thumbprints
 }
 
 resource "aws_iam_role" "github_actions" {
