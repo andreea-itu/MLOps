@@ -1,0 +1,43 @@
+# Local development only — mounts data/ and models/ from the host.
+# For Kubernetes on AWS, build/push Dockerfile (serve) and docker/train/Dockerfile (train).
+services:
+  ingest:
+    build:
+      context: .
+      dockerfile: docker/ingest/Dockerfile
+    image: mlops-ingest
+    volumes:
+      - ./data:/app/data
+
+  clean:
+    build:
+      context: .
+      dockerfile: docker/clean/Dockerfile
+    image: mlops-clean
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      ingest:
+        condition: service_completed_successfully
+
+  train:
+    build:
+      context: .
+      dockerfile: docker/train/Dockerfile_local
+    image: mlops-train
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    depends_on:
+      clean:
+        condition: service_completed_successfully
+
+  serve:
+    build:
+      context: .
+      dockerfile: docker/serve/Dockerfile_local
+    image: mlops-serve
+    ports:
+      - "8080:80"
+    volumes:
+      - ./models:/app/models
