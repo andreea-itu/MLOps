@@ -41,3 +41,20 @@ variable "apprunner_services" {
   }))
   default = []
 }
+
+variable "ecs_services" {
+  description = "ECS Fargate services for containerized APIs."
+  type = list(object({
+    key                = string
+    image              = optional(string)
+    ecr_repository_key = optional(string, "app")
+    image_tag          = optional(string, "latest")
+    container_port     = optional(number, 80)
+    cpu                = optional(number, 256)
+    memory             = optional(number, 512)
+    desired_count      = optional(number, 1)
+    enable_alb         = optional(bool, false)
+    tags               = optional(map(string), {})
+  }))
+  default = []
+}
