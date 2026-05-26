@@ -78,3 +78,7 @@ jobs:
       - run: terraform init -backend-config=backends/prd.conf
 
       - run: terraform apply -auto-approve -var-file=environments/prd.tfvars
+
+# git checkout release/v1.0.0
+# git commit --allow-empty -m "Trigger prd deploy"
+# git push origin release/v1.0.0
