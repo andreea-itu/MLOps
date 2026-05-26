@@ -1,17 +1,23 @@
 name: Application CI/CD DEV
 
+# Deploy runs only after infra triggers this workflow (or manual dispatch).
+# PRs run lint only — no AWS deploy before ECR/ECS exist.
 on:
+  workflow_dispatch:
+
   pull_request:
     branches: ["main"]
     paths:
       - "src/**"
       - ".github/workflows/app-cicd-dev.yml"
 
-  workflow_dispatch:
-
 permissions:
   contents: read
   id-token: write
+
+concurrency:
+  group: app-dev-deploy
+  cancel-in-progress: false
 
 env:
   AWS_REGION: eu-west-1
@@ -51,6 +57,7 @@ jobs:
   retrain-build-push:
     name: Retrain, Build & Push
     needs: lint
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -107,3 +114,12 @@ jobs:
           docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
           docker tag $REGISTRY/$REPOSITORY:$IMAGE_TAG $REGISTRY/$REPOSITORY:latest
           docker push $REGISTRY/$REPOSITORY:latest
+
+      - name: Redeploy ECS service
+        if: ${{ vars.ECS_CLUSTER_NAME != '' && vars.ECS_SERVICE_NAME != '' }}
+        run: |
+          aws ecs update-service \
+            --cluster "${{ vars.ECS_CLUSTER_NAME }}" \
+            --service "${{ vars.ECS_SERVICE_NAME }}" \
+            --force-new-deployment \
+            --region "${{ env.AWS_REGION }}"

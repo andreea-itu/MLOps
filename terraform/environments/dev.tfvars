@@ -32,19 +32,18 @@ ecr_repositories = [
   }
 ]
 
-apprunner_services = [
+# App Runner blocked on free account plan — use ECS Fargate instead.
+apprunner_services = []
+
+ecs_services = [
   {
-    key = "app"
-    source_configuration = {
-      auto_deployments_enabled = true
-      image_repository = {
-        image_identifier      = "082721030339.dkr.ecr.eu-west-1.amazonaws.com/ecr-app-dev:latest"
-        image_repository_type = "ECR"
-        image_configuration = {
-          port = "8080"
-        }
-      }
-    }
+    key            = "app"
+    image_tag      = "latest"
+    container_port = 80
+    cpu            = 256
+    memory         = 512
+    desired_count  = 1
+    enable_alb     = false
     tags = {
       Project = "mlops"
     }
