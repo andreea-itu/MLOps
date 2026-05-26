@@ -1,9 +1,22 @@
 name: Application CI/CD DEV
 
-# Deploy runs only after infra triggers this workflow (or manual dispatch).
-# PRs run lint only — no AWS deploy before ECR/ECS exist.
+# Invoked by infra after apply (workflow_call), manually, or on PR (lint only).
 on:
+  workflow_call:
+    inputs:
+      git_ref:
+        description: Git ref to build and deploy
+        type: string
+        required: false
+        default: main
+
   workflow_dispatch:
+    inputs:
+      git_ref:
+        description: Git ref to build and deploy
+        type: string
+        required: false
+        default: main
 
   pull_request:
     branches: ["main"]
@@ -16,29 +29,33 @@ permissions:
   id-token: write
 
 concurrency:
-  group: app-dev-deploy
-  cancel-in-progress: false
+  group: app-dev-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   AWS_REGION: eu-west-1
   WORKING_DIR: src
+  PYTHON_VERSION: "3.13"
 
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref || github.event.inputs.git_ref || github.ref }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install Poetry
         uses: snok/install-poetry@v1
@@ -49,28 +66,46 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-root
 
-      - name: Lint with Ruff
-        run: |
-          poetry run ruff check .
-          poetry run ruff format --check .
+      - name: Ruff check
+        run: poetry run ruff check .
 
-  retrain-build-push:
-    name: Retrain, Build & Push
+      - name: Ruff format
+        run: poetry run ruff format --check .
+
+  deploy:
+    name: Retrain, Build, Push & Deploy
     needs: lint
-    if: github.event_name != 'pull_request'
+    if: |
+      github.event_name != 'pull_request' &&
+      needs.lint.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: dev
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref || github.event.inputs.git_ref || github.ref }}
+
+      - name: Verify GitHub configuration
+        run: |
+          test -n "${{ vars.AWS_ROLE_ARN }}" || {
+            echo "::error::Set repository variable AWS_ROLE_ARN (terraform output github_actions_app_role_arn)"
+            exit 1
+          }
+          test -n "${{ vars.ECR_REPOSITORY }}" || {
+            echo "::error::Set repository variable ECR_REPOSITORY (e.g. ecr-app-dev)"
+            exit 1
+          }
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install Poetry
         uses: snok/install-poetry@v1
@@ -87,7 +122,7 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Pull latest data with DVC
+      - name: Pull data (DVC)
         run: poetry run dvc pull
 
       - name: Retrain model
@@ -104,22 +139,25 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push docker image to Amazon ECR
+      - name: Build and push image
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           REPOSITORY: ${{ vars.ECR_REPOSITORY }}
         run: |
-          IMAGE_TAG="${GITHUB_SHA:0:7}"
-          docker build -t $REGISTRY/$REPOSITORY:$IMAGE_TAG .
-          docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
-          docker tag $REGISTRY/$REPOSITORY:$IMAGE_TAG $REGISTRY/$REPOSITORY:latest
-          docker push $REGISTRY/$REPOSITORY:latest
+          IMAGE_TAG="$(git rev-parse --short=7 HEAD)"
+          IMAGE_URI="${REGISTRY}/${REPOSITORY}"
+          docker build -t "${IMAGE_URI}:${IMAGE_TAG}" .
+          docker push "${IMAGE_URI}:${IMAGE_TAG}"
+          docker tag "${IMAGE_URI}:${IMAGE_TAG}" "${IMAGE_URI}:latest"
+          docker push "${IMAGE_URI}:latest"
+          echo "Pushed ${IMAGE_URI}:${IMAGE_TAG} and :latest"
 
       - name: Redeploy ECS service
-        if: ${{ vars.ECS_CLUSTER_NAME != '' && vars.ECS_SERVICE_NAME != '' }}
+        if: vars.ECS_CLUSTER_NAME != '' && vars.ECS_SERVICE_NAME != ''
         run: |
           aws ecs update-service \
             --cluster "${{ vars.ECS_CLUSTER_NAME }}" \
             --service "${{ vars.ECS_SERVICE_NAME }}" \
             --force-new-deployment \
             --region "${{ env.AWS_REGION }}"
+          echo "ECS deployment started for ${{ vars.ECS_SERVICE_NAME }}"
