@@ -7,7 +7,6 @@ on:
       - "terraform/**"
       - "src/**"
       - ".github/workflows/tf-infra-cicd-dev.yml"
-      - ".github/workflows/app-cicd-dev.yml"
   pull_request:
     branches: ["main"]
     paths:
@@ -18,26 +17,25 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  actions: write
-
-concurrency:
-  group: tf-dev-state
-  cancel-in-progress: false
 
 env:
   TF_VERSION: 1.10.5
   AWS_REGION: eu-west-1
   WORKING_DIR: terraform
+  TF_VAR_FILE: environments/dev.tfvars
+  TF_BACKEND_CONFIG: backends/dev.conf
 
 jobs:
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       terraform: ${{ steps.filter.outputs.terraform }}
       src: ${{ steps.filter.outputs.src }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -47,11 +45,12 @@ jobs:
             src:
               - 'src/**'
 
-  plan:
-    name: Terraform Plan (dev)
+  fmt:
+    name: Terraform Format
     needs: changes
     if: needs.changes.outputs.terraform == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
@@ -62,38 +61,147 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
+      - name: Check formatting
+        run: terraform fmt -check -recursive -diff
+
+  plan:
+    name: Terraform Plan
+    needs: [changes, fmt]
+    if: needs.changes.outputs.terraform == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: tf-dev-plan-${{ github.head_ref || github.ref }}
+      cancel-in-progress: true
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      TF_IN_AUTOMATION: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - run: terraform fmt -check -recursive
+      - name: Terraform Init
+        run: terraform init -backend-config=${{ env.TF_BACKEND_CONFIG }}
 
-      - run: terraform init -backend-config=backends/dev.conf
+      - name: Terraform Validate
+        run: terraform validate -no-color
 
-      - run: terraform validate -no-color
+      - name: Terraform Plan
+        run: |
+          set -o pipefail
+          terraform plan \
+            -no-color \
+            -input=false \
+            -var-file=${{ env.TF_VAR_FILE }} \
+            -out=tfplan \
+            | tee plan.txt
 
-      - run: terraform plan -no-color -var-file=environments/dev.tfvars
+      - name: Upload plan artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ github.run_id }}
+          path: |
+            ${{ env.WORKING_DIR }}/tfplan
+            ${{ env.WORKING_DIR }}/plan.txt
+          retention-days: 5
+          if-no-files-found: error
+
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planPath = '${{ env.WORKING_DIR }}/plan.txt';
+            let planText = '_Plan output unavailable._';
+            try {
+              const plan = fs.readFileSync(planPath, 'utf8');
+              planText = plan.length > 60000
+                ? plan.slice(0, 60000) + '\n\n… _(truncated)_'
+                : plan;
+            } catch (e) {
+              // keep default message
+            }
+
+            const marker = '<!-- terraform-plan-dev -->';
+            const body = [
+              marker,
+              '### Terraform Plan (dev)',
+              '',
+              '```diff',
+              planText,
+              '```',
+              '',
+              `*Pusher: @${{ github.actor }}, Action: \`${{ github.workflow }}\`*`,
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
 
   apply:
-    name: Terraform Apply (dev)
+    name: Terraform Apply
     needs: [changes, plan]
     if: |
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
-      needs.changes.outputs.terraform == 'true'
+      needs.changes.outputs.terraform == 'true' &&
+      needs.plan.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: dev
+    concurrency:
+      group: tf-dev-apply
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
+    permissions:
+      contents: read
+    env:
+      TF_IN_AUTOMATION: true
     steps:
       - uses: actions/checkout@v4
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -101,17 +209,27 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - run: terraform init -backend-config=backends/dev.conf
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ github.run_id }}
+          path: ${{ env.WORKING_DIR }}
 
-      - run: terraform apply -auto-approve -var-file=environments/dev.tfvars
+      - name: Terraform Init
+        run: terraform init -backend-config=${{ env.TF_BACKEND_CONFIG }}
 
-  trigger-application:
-    name: Trigger Application CI/CD
-    needs: [changes, apply]
+      - name: Terraform Apply
+        run: terraform apply -no-color -input=false -auto-approve tfplan
+
+  application:
+    name: Application CI/CD
+    needs: [changes, plan, apply]
     if: |
       always() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
+      needs.plan.result != 'failure' &&
+      needs.plan.result != 'cancelled' &&
       (
         needs.apply.result == 'success' ||
         (
@@ -119,15 +237,7 @@ jobs:
           needs.changes.outputs.src == 'true'
         )
       )
-    runs-on: ubuntu-latest
-    steps:
-      - name: Run application pipeline
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'app-cicd-dev.yml',
-              ref: 'main',
-            });
+    uses: ./.github/workflows/app-cicd-dev.yml
+    with:
+      git_ref: ${{ github.sha }}
+    secrets: inherit

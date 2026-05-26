@@ -10,24 +10,24 @@ on:
     paths:
       - "terraform/**"
       - ".github/workflows/tf-infra-cicd-prd.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: write
 
-concurrency:
-  group: tf-prd-state
-  cancel-in-progress: false
-
 env:
   TF_VERSION: 1.10.5
   AWS_REGION: eu-west-1
   WORKING_DIR: terraform
+  TF_VAR_FILE: environments/prd.tfvars
+  TF_BACKEND_CONFIG: backends/prd.conf
 
 jobs:
-  plan:
-    name: Terraform Plan (prd)
+  fmt:
+    name: Terraform Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
@@ -38,35 +38,142 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
+      - run: terraform fmt -check -recursive -diff
+
+  plan:
+    name: Terraform Plan
+    needs: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: tf-prd-plan-${{ github.head_ref || github.ref }}
+      cancel-in-progress: true
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      TF_IN_AUTOMATION: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - run: terraform fmt -check -recursive
-
-      - run: terraform init -backend-config=backends/prd.conf
+      - run: terraform init -backend-config=${{ env.TF_BACKEND_CONFIG }}
 
       - run: terraform validate -no-color
 
-      - run: terraform plan -no-color -var-file=environments/prd.tfvars
+      - name: Terraform Plan
+        run: |
+          set -o pipefail
+          terraform plan \
+            -no-color \
+            -input=false \
+            -var-file=${{ env.TF_VAR_FILE }} \
+            -out=tfplan \
+            | tee plan.txt
+
+      - name: Upload plan artifact
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-prd-${{ github.run_id }}
+          path: |
+            ${{ env.WORKING_DIR }}/tfplan
+            ${{ env.WORKING_DIR }}/plan.txt
+          retention-days: 5
+          if-no-files-found: error
+
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planPath = '${{ env.WORKING_DIR }}/plan.txt';
+            let planText = '_Plan output unavailable._';
+            try {
+              const plan = fs.readFileSync(planPath, 'utf8');
+              planText = plan.length > 60000
+                ? plan.slice(0, 60000) + '\n\n… _(truncated)_'
+                : plan;
+            } catch (e) {
+              // keep default message
+            }
+
+            const marker = '<!-- terraform-plan-prd -->';
+            const body = [
+              marker,
+              '### Terraform Plan (prd)',
+              '',
+              '```diff',
+              planText,
+              '```',
+              '',
+              `*Pusher: @${{ github.actor }}, Action: \`${{ github.workflow }}\`*`,
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
 
   apply:
-    name: Terraform Apply (prd)
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+    name: Terraform Apply
     needs: plan
+    if: |
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/heads/release/') &&
+      needs.plan.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: prd
+    concurrency:
+      group: tf-prd-apply
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
+    permissions:
+      contents: read
+    env:
+      TF_IN_AUTOMATION: true
     steps:
       - uses: actions/checkout@v4
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -74,10 +181,11 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - run: terraform init -backend-config=backends/prd.conf
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-prd-${{ github.run_id }}
+          path: ${{ env.WORKING_DIR }}
 
-      - run: terraform apply -auto-approve -var-file=environments/prd.tfvars
+      - run: terraform init -backend-config=${{ env.TF_BACKEND_CONFIG }}
 
-# git checkout release/v1.0.0
-# git commit --allow-empty -m "Trigger prd deploy"
-# git push origin release/v1.0.0
+      - run: terraform apply -no-color -input=false -auto-approve tfplan
