@@ -1,5 +1,5 @@
 resource "aws_apprunner_service" "ars" {
-  service_name = local.service_name
+  service_name = local.name
 
   source_configuration {
     authentication_configuration {
@@ -18,7 +18,7 @@ resource "aws_apprunner_service" "ars" {
 }
 
 resource "aws_iam_role" "iamr" {
-  name = "${local.service_name}-ars-iam-role"
+  name = "${local.name}-ars-iam-role"
   assume_role_policy = jsonencode({
     "Version" : "2012-10-17",
     "Statement" : [
