@@ -1,11 +1,10 @@
 name: tf-infra-cicd-prd
 
 on:
+  # No paths filter on push: creating release/vX from main points at an
+  # existing commit, so GitHub sees no changed files and skips path-filtered workflows.
   push:
     branches: ["release/**"]
-    paths:
-      - "terraform/**"
-      - ".github/workflows/tf-infra-cicd-prd.yml"
   pull_request:
     branches: ["release/**"]
     paths:
