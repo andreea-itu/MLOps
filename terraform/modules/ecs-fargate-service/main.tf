@@ -144,7 +144,5 @@ resource "aws_ecs_service" "this" {
     }
   }
 
-  depends_on = var.enable_alb ? [aws_lb_listener.http[0]] : []
-
   tags = var.tags
 }
