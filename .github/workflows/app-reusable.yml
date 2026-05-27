@@ -163,7 +163,7 @@ jobs:
           REPOSITORY: ${{ vars.ECR_REPOSITORY }}
         run: |
           IMAGE_TAG="$(git rev-parse --short=7 HEAD)"
-          IMAGE_URI="${REGISTRY}/${REpository}"
+          IMAGE_URI="${REGISTRY}/${REPOSITORY}"
           docker tag app:ci "${IMAGE_URI}:${IMAGE_TAG}"
           docker push "${IMAGE_URI}:${IMAGE_TAG}"
           echo "Pushed ${IMAGE_URI}:${IMAGE_TAG}"
