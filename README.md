@@ -66,7 +66,7 @@ mlops/
 | **ML pipeline** | `main.py`: ingest → clean → train → evaluate; configured in `src/config.yml`. |
 | **Model artifact** | `src/models/model.pkl` (joblib pipeline: preprocess + SMOTE + classifier). |
 | **MLflow** | Optional experiment tracking and Model Registry; training registers when `MLFLOW_TRACKING_URI` is set; serving can load from registry via `model_loader.py`. |
-| **ECR** | Amazon container registry; CI pushes `app:<git-sha>`. |
+| **ECR** | Amazon container registry; CI pushes `:<short-sha>` and `:latest`. |
 | **ECS Fargate** | Serverless containers running the API; GitHub Actions triggers `update-service` after push. |
 | **OIDC** | GitHub Actions assumes an IAM role (no long-lived keys in workflows) using `vars.AWS_ROLE_ARN`. |
 | **IaC** | Terraform modules for S3, ECR, ECS, and the GitHub Actions IAM role. |
@@ -136,7 +136,7 @@ OIDC trust subjects are defined in `terraform/github_actions_oidc.tf` (adjust `r
 | PR to `main` | `fmt`, `plan` (comment on PR) | `app-reusable.yml` with `deploy: false` |
 | Push to `main` | `apply` if `terraform/**` changed | `app-reusable.yml` with `deploy: true` |
 
-Application job (`app-reusable.yml`): Ruff → `dvc pull` → `python main.py` → `docker build` → push ECR tag `<short-sha>` → `aws ecs update-service --force-new-deployment`.
+Application job (`app-reusable.yml`): Ruff → `dvc pull` → `python main.py` → `docker build` → push ECR `<short-sha>` + `:latest` → register ECS task definition with the new image → `update-service`.
 
 Image is built from `src/Dockerfile` (includes `models/model.pkl` produced in the same job).
 
@@ -153,18 +153,79 @@ Manual promote: run **Application Promote** workflow with commit SHA and `releas
 
 ## Accessing the deployed API (ECS)
 
-With `enable_alb = false` (current dev/prd tfvars), there is no stable URL from Terraform (`ecs_app_url` may be null). Find the task **public IP** in AWS Console → ECS → cluster → service → running task → networking.
+With `enable_alb = false` (current dev/prd tfvars), tasks get a **public IP** on port 80. There is no stable hostname: `terraform output ecs_app_url` is null until you enable an ALB.
 
-Then:
+| Setting | Effect |
+|---------|--------|
+| `assign_public_ip = true` | Each Fargate task has a public IPv4 address |
+| `enable_alb = false` | Security group allows HTTP from `0.0.0.0/0`; no load balancer |
+| `enable_alb = true` | Use `terraform output ecs_app_url` → `http://<alb-dns>/` (~$16/mo extra; see `terraform/modules/ecs-fargate-service/README.md`) |
+
+**Dev resource names** (prd: replace `dev` with `prd` — e.g. `ecs-app-prd`, `ecr-app-prd`, log group `/ecs/ecs-app-prd`):
+
+| Resource | Dev name |
+|----------|----------|
+| ECS cluster / service | `ecs-app-dev` |
+| ECR repository | `ecr-app-dev` |
+| CloudWatch log group | `/ecs/ecs-app-dev` |
+| Region | `eu-west-1` |
+
+Set shell variables once (adjust for prd):
 
 ```bash
-curl "http://<TASK_PUBLIC_IP>/"
-curl -X POST "http://<TASK_PUBLIC_IP>/predict" \
-  -H "Content-Type: application/json" \
-  -d '{"Gender":"Male","Age":49,"HasDrivingLicense":1,"RegionID":28,"Switch":0,"PastAccident":"1-2 Year","AnnualPremium":1885.05}'
+export AWS_REGION=eu-west-1
+export ECS_CLUSTER=ecs-app-dev
+export ECS_SERVICE=ecs-app-dev
+export ECR_REPO=ecr-app-dev
 ```
 
-Enable `enable_alb = true` in tfvars for an ALB DNS name (extra cost; see `terraform/modules/ecs-fargate-service/README.md`).
+### Get the task public IP (CLI)
+
+```bash
+TASK_ARN=$(aws ecs list-tasks \
+  --cluster "$ECS_CLUSTER" \
+  --service-name "$ECS_SERVICE" \
+  --desired-status RUNNING \
+  --region "$AWS_REGION" \
+  --query 'taskArns[0]' --output text)
+
+ENI=$(aws ecs describe-tasks \
+  --cluster "$ECS_CLUSTER" \
+  --tasks "$TASK_ARN" \
+  --region "$AWS_REGION" \
+  --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
+  --output text)
+
+PUBLIC_IP=$(aws ec2 describe-network-interfaces \
+  --network-interface-ids "$ENI" \
+  --region "$AWS_REGION" \
+  --query 'NetworkInterfaces[0].Association.PublicIp' \
+  --output text)
+
+echo "PUBLIC_IP=$PUBLIC_IP"
+```
+
+**Console:** ECS → Clusters → **ecs-app-dev** → Services → **ecs-app-dev** → Tasks → running task → **Networking** → **Public IP**.
+
+### Call the API
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/` | GET | Health: `{"health_check":"OK"}` |
+| `/predict` | POST | Inference |
+| `/docs` | GET | Swagger UI |
+
+```bash
+curl "http://${PUBLIC_IP}/"
+
+curl -X POST "http://${PUBLIC_IP}/predict" \
+  -H "Content-Type: application/json" \
+  -d '{"Gender":"Male","Age":49,"HasDrivingLicense":1,"RegionID":28,"Switch":0,"PastAccident":"1-2 Year","AnnualPremium":1885.05}'
+
+curl -sS -o /dev/null -w "HTTP %{http_code}\n" "http://${PUBLIC_IP}/docs"
+```
+
+Browser: `http://<PUBLIC_IP>/docs`
 
 ## Testing (smoke checks)
 
@@ -176,6 +237,100 @@ Automated `pytest` suites are not checked in yet; CI relies on lint, training, a
 
 ## Troubleshooting
 
+### ECS (dev / prd)
+
+Use the [environment variables](#accessing-the-deployed-api-ecs) above (`ECS_CLUSTER`, `ECS_SERVICE`, `ECR_REPO`, `AWS_REGION`). Work through these in order.
+
+**A. Service and task health**
+
+```bash
+aws ecs describe-services \
+  --cluster "$ECS_CLUSTER" \
+  --services "$ECS_SERVICE" \
+  --region "$AWS_REGION" \
+  --query 'services[0].{status:status,running:runningCount,desired:desiredCount,pending:pendingCount,events:events[0:5]}'
+```
+
+- `runningCount = 0` → task failed to start; check CloudWatch logs and ECR tags (B–C below).
+- `runningCount = 1` but `curl` times out → wrong/stale public IP, security group, or local firewall blocking outbound HTTP to the task IP.
+
+**B. CloudWatch logs**
+
+Log group: `/ecs/ecs-app-dev` (or `/ecs/ecs-app-prd`).
+
+```bash
+aws logs tail "/ecs/${ECS_SERVICE}" --region "$AWS_REGION" --since 1h --follow
+```
+
+Look for `CannotPullContainerError`, image not found, or Python tracebacks (e.g. missing `models/model.pkl` — the production `src/Dockerfile` copies `models/` at build time; CI must run `python main.py` before `docker build`).
+
+**C. ECR image tags vs task definition**
+
+CI registers a new task definition pointing at `:<short-sha>` (and also pushes `:latest`). If the running task still looks stale, compare tags and the active task definition image:
+
+```bash
+aws ecr describe-images \
+  --repository-name "$ECR_REPO" \
+  --region "$AWS_REGION" \
+  --query 'imageDetails[*].imageTags' \
+  --output table
+
+aws ecs describe-task-definition \
+  --task-definition "$ECS_SERVICE" \
+  --region "$AWS_REGION" \
+  --query 'taskDefinition.containerDefinitions[0].image' \
+  --output text
+```
+
+If deploy was skipped (no `src/**` change), re-run the workflow on `main` or push a small `src/` change.
+
+**D. Recent stopped tasks**
+
+```bash
+STOPPED=$(aws ecs list-tasks \
+  --cluster "$ECS_CLUSTER" \
+  --service-name "$ECS_SERVICE" \
+  --desired-status STOPPED \
+  --region "$AWS_REGION" \
+  --max-items 3 \
+  --query 'taskArns' --output text)
+
+aws ecs describe-tasks \
+  --cluster "$ECS_CLUSTER" \
+  --tasks $STOPPED \
+  --region "$AWS_REGION" \
+  --query 'tasks[*].{stoppedReason:stoppedReason,containers:containers[*].{reason:reason,exitCode:exitCode}}'
+```
+
+**E. Force a new deployment**
+
+```bash
+aws ecs update-service \
+  --cluster "$ECS_CLUSTER" \
+  --service "$ECS_SERVICE" \
+  --force-new-deployment \
+  --region "$AWS_REGION"
+```
+
+Or re-run the **Dev — Build on PR, Release on main** workflow on `main` (with `deploy: true` on merge).
+
+**F. Stable URL (optional)**
+
+```bash
+# In terraform/environments/dev.tfvars set enable_alb = true, then:
+cd terraform
+terraform apply -var-file=environments/dev.tfvars
+terraform output ecs_app_url
+```
+
+With ALB enabled, tasks only accept HTTP from the load balancer, not directly from the task public IP.
+
+**G. Local baseline (app vs AWS)**
+
+If ECS fails but the app is fine locally, see [src/README.md](src/README.md): `dvc pull`, Docker on `localhost:8080`, curl `/` and `/predict`.
+
+### General
+
 | Symptom | Likely cause | What to do |
 |---------|----------------|------------|
 | `dvc pull` / `403` on S3 | AWS credentials or wrong remote URL | `aws sts get-caller-identity`; check `src/.dvc/config` matches `terraform output bucket_ids` |
@@ -183,7 +338,7 @@ Automated `pytest` suites are not checked in yet; CI relies on lint, training, a
 | CI: OIDC assume role failed | Trust policy `sub` mismatch | Compare workflow log `sub=` with `allowed_subjects` in `github_actions_oidc.tf` |
 | Docker build: `models/` missing | Train skipped locally | Run `python main.py` or `docker compose run --rm train` before `docker build` |
 | API returns 500 on `/predict` | No model in container | Local: mount `models/`; ECS: ensure CI train step ran before image build |
-| ECS deploy OK but old behavior | Task still on old image | Confirm ECR tag matches commit; check service events; force new deployment |
+| ECS deploy OK but old behavior | Task still on old image | ECR tags + task definition image (§ C above); force new deployment (§ E) |
 | `pathspec` / DVC import error | Incompatible `pathspec` 1.x | Use Poetry lockfile (`pathspec < 1.0` pinned in `pyproject.toml`) |
 | Plan/apply fails in GHA | Backend or secrets | Verify `AWS_ACCESS_KEY_ID` / `SECRET` for Terraform jobs; `terraform init -backend-config=...` locally |
 

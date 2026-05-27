@@ -57,6 +57,8 @@ jobs:
           filters: |
             terraform:
               - 'terraform/**'
+            src:
+              - 'src/**'
 
   # Infra — Lint
   fmt:
