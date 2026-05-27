@@ -1,5 +1,8 @@
 environment = "dev"
 aws_region  = "eu-west-1"
+account_id  = "082721030339"
+
+ecr_repository_name = "ecr-app-dev"
 
 s3_buckets = [
   {
@@ -32,7 +35,6 @@ ecr_repositories = [
   }
 ]
 
-# App Runner blocked on free account plan — use ECS Fargate instead.
 apprunner_services = []
 
 ecs_services = [
@@ -45,7 +47,8 @@ ecs_services = [
     desired_count  = 1
     enable_alb     = false
     tags = {
-      Project = "mlops"
+      Environment = "dev"
+      Project     = "mlops"
     }
   }
 ]

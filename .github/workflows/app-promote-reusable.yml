@@ -1,0 +1,202 @@
+name: Application Promote (dev → prd)
+
+on:
+  workflow_call:
+    inputs:
+      git_ref:
+        description: Commit SHA (must match dev-deployed image tag)
+        type: string
+        required: true
+      release:
+        description: false = verify only; true = copy image + deploy ECS
+        type: boolean
+        required: false
+        default: false
+
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: Commit SHA already in dev ECR
+        type: string
+        required: true
+      release:
+        description: Promote to prd
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: eu-west-1
+  WORKING_DIR: src
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  lint:
+    name: Lint
+    if: inputs.release == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+      - run: poetry install --no-interaction --no-root
+      - run: poetry run ruff check .
+      - run: poetry run ruff format --check .
+
+  verify-dev-image:
+    name: Verify dev image
+    needs: lint
+    if: |
+      always() &&
+      (needs.lint.result == 'success' || needs.lint.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: prd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref }}
+
+      - name: Verify GitHub configuration
+        run: |
+          test -n "${{ vars.AWS_ROLE_ARN }}" || {
+            echo "::error::Set prd environment variable AWS_ROLE_ARN"
+            exit 1
+          }
+          test -n "${{ vars.DEV_ECR_REPOSITORY }}" || {
+            echo "::error::Set prd environment variable DEV_ECR_REPOSITORY (source dev repo)"
+            exit 1
+          }
+          test -n "${{ vars.ECR_REPOSITORY }}" || {
+            echo "::error::Set prd environment variable ECR_REPOSITORY (target prd repo)"
+            exit 1
+          }
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve image tag
+        id: meta
+        run: |
+          IMAGE_TAG="$(git rev-parse --short=7 HEAD)"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Image tag: ${IMAGE_TAG}"
+
+      - name: Confirm image exists in dev ECR
+        env:
+          DEV_REPO: ${{ vars.DEV_ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          aws ecr describe-images \
+            --repository-name "${DEV_REPO}" \
+            --image-ids "imageTag=${IMAGE_TAG}" \
+            --region "${{ env.AWS_REGION }}"
+          echo "Dev image ${DEV_REPO}:${IMAGE_TAG} exists — safe to promote"
+
+  promote:
+    name: Promote & deploy
+    needs: verify-dev-image
+    if: |
+      inputs.release == true &&
+      needs.verify-dev-image.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: prd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve image tag
+        id: meta
+        run: |
+          IMAGE_TAG="$(git rev-parse --short=7 HEAD)"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Copy image dev → prd
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          DEV_REPO: ${{ vars.DEV_ECR_REPOSITORY }}
+          PRD_REPO: ${{ vars.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          SRC="${REGISTRY}/${DEV_REPO}:${IMAGE_TAG}"
+          DST="${REGISTRY}/${PRD_REPO}:${IMAGE_TAG}"
+          LATEST="${REGISTRY}/${PRD_REPO}:latest"
+
+          docker pull "${SRC}"
+          docker tag "${SRC}" "${DST}"
+          docker tag "${SRC}" "${LATEST}"
+          docker push "${DST}"
+          docker push "${LATEST}"
+          echo "Promoted ${SRC} → ${DST} and :latest"
+
+      - name: Update ECS task definition & deploy
+        if: vars.ECS_CLUSTER_NAME != '' && vars.ECS_SERVICE_NAME != ''
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          PRD_REPO: ${{ vars.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          IMAGE_URI="${REGISTRY}/${PRD_REPO}:${IMAGE_TAG}"
+
+          # Fetch current task def, swap image, register new revision
+          TASK_DEF_ARN="$(aws ecs describe-services \
+            --cluster "${{ vars.ECS_CLUSTER_NAME }}" \
+            --services "${{ vars.ECS_SERVICE_NAME }}" \
+            --query 'services[0].taskDefinition' \
+            --output text \
+            --region "${{ env.AWS_REGION }}")"
+
+          aws ecs describe-task-definition \
+            --task-definition "${TASK_DEF_ARN}" \
+            --query 'taskDefinition' \
+            --region "${{ env.AWS_REGION }}" > task-def.json
+
+          jq --arg IMAGE "${IMAGE_URI}" \
+            'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+             | .containerDefinitions[0].image = $IMAGE' \
+            task-def.json > new-task-def.json
+
+          NEW_TASK_DEF_ARN="$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text \
+            --region "${{ env.AWS_REGION }}")"
+
+          aws ecs update-service \
+            --cluster "${{ vars.ECS_CLUSTER_NAME }}" \
+            --service "${{ vars.ECS_SERVICE_NAME }}" \
+            --task-definition "${NEW_TASK_DEF_ARN}" \
+            --force-new-deployment \
+            --region "${{ env.AWS_REGION }}"
+
+          echo "ECS service updated to ${IMAGE_URI}"

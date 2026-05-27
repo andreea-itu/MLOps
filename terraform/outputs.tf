@@ -22,3 +22,8 @@ output "ecs_app_url" {
   description = "HTTP URL when ALB is enabled (null = use task public IP in ECS console)."
   value       = try(module.ecs_service["app"].url, null)
 }
+
+output "bucket_ids" {
+  value       = { for k, b in module.s3_bucket : k => b.bucket_id }
+  description = "Bucket names by key."
+}

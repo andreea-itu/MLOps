@@ -1,6 +1,6 @@
-name: Application CI/CD DEV
+name: Application Build & Release
 
-# Invoked by infra after apply (workflow_call), manually, or on PR (lint only).
+# CHANGED: invoked by infra workflow only (+ manual dispatch)
 on:
   workflow_call:
     inputs:
@@ -9,6 +9,11 @@ on:
         type: string
         required: false
         default: main
+      deploy: # NEW
+        description: Push image to ECR and redeploy ECS (false on PR)
+        type: boolean
+        required: false
+        default: false
 
   workflow_dispatch:
     inputs:
@@ -17,12 +22,13 @@ on:
         type: string
         required: false
         default: main
+      deploy: # NEW
+        description: Push image to ECR and redeploy ECS
+        type: boolean
+        required: false
+        default: true
 
-  pull_request:
-    branches: ["main"]
-    paths:
-      - "src/**"
-      - ".github/workflows/app-cicd-dev.yml"
+  # REMOVED: standalone pull_request trigger (infra workflow orchestrates PR checks)
 
 permissions:
   contents: read
@@ -45,7 +51,6 @@ jobs:
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,19 +77,17 @@ jobs:
       - name: Ruff format
         run: poetry run ruff format --check .
 
-  deploy:
-    name: Retrain, Build, Push & Deploy
+  # Retrain + Docker build on PR; push + deploy on merge
+  build:
+    name: Retrain, Build & Release
     needs: lint
-    if: |
-      github.event_name != 'pull_request' &&
-      needs.lint.result == 'success'
+    if: needs.lint.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: dev
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -116,6 +119,16 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-root
 
+      - name: Print OIDC subject
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken('sts.amazonaws.com');
+            const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+            core.info(`sub=${payload.sub}`);
+            core.info(`aud=${payload.aud}`);
+            core.info(`iss=${payload.iss}`);
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -135,25 +148,30 @@ jobs:
           poetry self add poetry-plugin-export
           poetry export --only main --without-hashes --output requirements.txt
 
+      - name: Build Docker image
+        run: docker build -t app:ci .
+
       - name: Login to Amazon ECR
+        if: inputs.deploy == true || github.event.inputs.deploy == 'true'
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push image
+      - name: Push image to ECR
+        if: inputs.deploy == true || github.event.inputs.deploy == 'true'
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           REPOSITORY: ${{ vars.ECR_REPOSITORY }}
         run: |
           IMAGE_TAG="$(git rev-parse --short=7 HEAD)"
-          IMAGE_URI="${REGISTRY}/${REPOSITORY}"
-          docker build -t "${IMAGE_URI}:${IMAGE_TAG}" .
+          IMAGE_URI="${REGISTRY}/${REpository}"
+          docker tag app:ci "${IMAGE_URI}:${IMAGE_TAG}"
           docker push "${IMAGE_URI}:${IMAGE_TAG}"
-          docker tag "${IMAGE_URI}:${IMAGE_TAG}" "${IMAGE_URI}:latest"
-          docker push "${IMAGE_URI}:latest"
-          echo "Pushed ${IMAGE_URI}:${IMAGE_TAG} and :latest"
+          echo "Pushed ${IMAGE_URI}:${IMAGE_TAG}"
 
       - name: Redeploy ECS service
-        if: vars.ECS_CLUSTER_NAME != '' && vars.ECS_SERVICE_NAME != ''
+        if: |
+          (inputs.deploy == true || github.event.inputs.deploy == 'true') &&
+          vars.ECS_CLUSTER_NAME != '' && vars.ECS_SERVICE_NAME != ''
         run: |
           aws ecs update-service \
             --cluster "${{ vars.ECS_CLUSTER_NAME }}" \
