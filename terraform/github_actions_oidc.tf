@@ -6,6 +6,9 @@ module "github_actions_app" {
   allowed_subjects = [
     "repo:andreea-itu/MLOps:pull_request",
     "repo:andreea-itu/MLOps:ref:refs/heads/main",
+    "repo:andreea-itu/MLOps:ref:refs/heads/release/*",
+    "repo:andreea-itu/MLOps:environment:dev",
+    "repo:andreea-itu/MLOps:environment:prd",
   ]
 
   ecr_repository_arns = [
