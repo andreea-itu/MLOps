@@ -11,6 +11,11 @@ module "github_actions_app" {
   ecr_repository_arns = [
     module.ecr_repository["app"].repository_arn,
   ]
+  ecr_repository_name = module.ecr_repository["app"].repository_name
+
+  s3_bucket_name = module.s3_bucket["mlops-postgrade-datastore"].bucket_id
+
+  account_id = var.account_id
 
   s3_bucket_arns = [
     module.s3_bucket["mlops-postgrade-datastore"].bucket_arn,

@@ -85,6 +85,23 @@ resource "aws_iam_role_policy" "github_actions" {
           var.s3_bucket_arns,
           [for arn in var.s3_bucket_arns : "${arn}/*"]
         )
+      },
+      {
+        "Effect" : "Allow",
+        "Action" : [
+          "ecr:GetAuthorizationToken",
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:PutImage",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload"
+        ],
+        "Resource" : [
+          "arn:aws:ecr:eu-west-1:${var.account_id}:repository/${var.ecr_repository_name}",
+          "arn:aws:ecr:eu-west-1:${var.account_id}:repository/${var.ecr_repository_name}/*",
+        ]
       }
     ]
   })

@@ -58,3 +58,8 @@ variable "ecs_services" {
   }))
   default = []
 }
+
+variable "account_id" {
+  description = "AWS account ID."
+  type        = string
+}

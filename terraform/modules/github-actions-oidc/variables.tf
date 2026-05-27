@@ -25,3 +25,16 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "account_id" {
+  description = "AWS account ID."
+  type        = string
+}
+variable "ecr_repository_name" {
+  description = "ECR repository name."
+  type        = string
+}
+variable "s3_bucket_name" {
+  description = "S3 bucket name."
+  type        = string
+}
