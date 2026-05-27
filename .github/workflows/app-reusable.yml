@@ -1,3 +1,48 @@
+name: Application Build & Release
+
+# CHANGED: invoked by infra workflow only (+ manual dispatch)
+on:
+  workflow_call:
+    inputs:
+      git_ref:
+        description: Git ref to build and deploy
+        type: string
+        required: false
+        default: main
+      deploy: # NEW
+        description: Push image to ECR and redeploy ECS (false on PR)
+        type: boolean
+        required: false
+        default: false
+
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: Git ref to build and deploy
+        type: string
+        required: false
+        default: main
+      deploy: # NEW
+        description: Push image to ECR and redeploy ECS
+        type: boolean
+        required: false
+        default: true
+
+  # REMOVED: standalone pull_request trigger (infra workflow orchestrates PR checks)
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: app-dev-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  AWS_REGION: eu-west-1
+  WORKING_DIR: src
+  PYTHON_VERSION: "3.13"
+
 jobs:
   lint:
     name: Lint
