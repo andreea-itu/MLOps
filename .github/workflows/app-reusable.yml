@@ -1,6 +1,6 @@
-name: Application CI/CD DEV
+name: Application Build & Release
 
-# Invoked by infra after apply (workflow_call), manually, or on PR (lint only).
+# CHANGED: invoked by infra workflow only (+ manual dispatch)
 on:
   workflow_call:
     inputs:
@@ -9,6 +9,11 @@ on:
         type: string
         required: false
         default: main
+      deploy: # NEW
+        description: Push image to ECR and redeploy ECS (false on PR)
+        type: boolean
+        required: false
+        default: false
 
   workflow_dispatch:
     inputs:
@@ -17,12 +22,13 @@ on:
         type: string
         required: false
         default: main
+      deploy: # NEW
+        description: Push image to ECR and redeploy ECS
+        type: boolean
+        required: false
+        default: true
 
-  pull_request:
-    branches: ["main"]
-    paths:
-      - "src/**"
-      - ".github/workflows/app-cicd-dev.yml"
+  # REMOVED: standalone pull_request trigger (infra workflow orchestrates PR checks)
 
 permissions:
   contents: read
@@ -45,7 +51,6 @@ jobs:
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,25 +77,69 @@ jobs:
       - name: Ruff format
         run: poetry run ruff format --check .
 
-  deploy:
-    name: Retrain, Build, Push & Deploy
+  # NEW: validate Docker build on PR (no push/deploy)
+  build:
+    name: Build
     needs: lint
-    if: |
-      github.event_name != 'pull_request' &&
-      needs.lint.result == 'success'
+    if: needs.lint.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    environment: dev
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.git_ref || github.event.inputs.git_ref || github.ref }}
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      - name: Export requirements for Docker
+        run: |
+          poetry self add poetry-plugin-export
+          poetry export --only main --without-hashes --output requirements.txt
+
+      - name: Build Docker image
+        run: docker build -t app:ci .
+
+  # CHANGED: only runs after merge (or manual dispatch with deploy=true)
+  deploy:
+    name: Retrain, Push & Deploy
+    needs: [lint, build]
+    if: |
+      needs.lint.result == 'success' &&
+      needs.build.result == 'success' &&
+      (
+        inputs.deploy == true ||
+        github.event.inputs.deploy == 'true'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: dev
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      # Check out the commit that triggered the pipeline:
+      - name: Checkout commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref || github.event.inputs.git_ref || github.ref }}
+
+      # If missing: step fails immediately | GitHub shows an annotation
       - name: Verify GitHub configuration
         run: |
           test -n "${{ vars.AWS_ROLE_ARN }}" || {
@@ -122,9 +171,13 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # On the runner, data/ is empty until dvc pull downloads them using the OIDC role (S3 permissions from github_actions_app in Terraform).
       - name: Pull data (DVC)
         run: poetry run dvc pull
 
+      #  writes the trained artifact under models/ (per config.yml).
+      # Fresh model per deploy — each merge gets a model trained on the pulled data for that commit.
+      # needed for Dockerfile
       - name: Retrain model
         run: |
           mkdir -p models/
@@ -148,9 +201,7 @@ jobs:
           IMAGE_URI="${REGISTRY}/${REPOSITORY}"
           docker build -t "${IMAGE_URI}:${IMAGE_TAG}" .
           docker push "${IMAGE_URI}:${IMAGE_TAG}"
-          docker tag "${IMAGE_URI}:${IMAGE_TAG}" "${IMAGE_URI}:latest"
-          docker push "${IMAGE_URI}:latest"
-          echo "Pushed ${IMAGE_URI}:${IMAGE_TAG} and :latest"
+          echo "Pushed ${IMAGE_URI}:${IMAGE_TAG}"
 
       - name: Redeploy ECS service
         if: vars.ECS_CLUSTER_NAME != '' && vars.ECS_SERVICE_NAME != ''

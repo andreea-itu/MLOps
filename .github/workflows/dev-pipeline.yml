@@ -1,4 +1,17 @@
-name: Infrastructure CI/CD DEV
+name: Dev — Build on PR, Release on main
+
+# On PR:
+# Dev Pipeline
+# ├── Infra — Lint
+# ├── Infra — Plan
+# └── App — Build          → Application Build & Release / Lint + Build
+
+# On merge to main
+
+# Dev Pipeline
+# ├── Infra — Plan
+# ├── Infra — Release      → terraform apply
+# └── App — Release        → Application Build & Release / Lint + Build + Release
 
 on:
   push:
@@ -6,12 +19,13 @@ on:
     paths:
       - "terraform/**"
       - "src/**"
-      - ".github/workflows/tf-infra-cicd-dev.yml"
+      - ".github/workflows/dev-pipeline.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "terraform/**"
-      - ".github/workflows/tf-infra-cicd-dev.yml"
+      - "src/**"
+      - ".github/workflows/dev-pipeline.yml"
   workflow_dispatch:
 
 permissions:
@@ -42,9 +56,8 @@ jobs:
           filters: |
             terraform:
               - 'terraform/**'
-            src:
-              - 'src/**'
 
+  # Infra — Lint
   fmt:
     name: Terraform Format
     needs: changes
@@ -64,10 +77,13 @@ jobs:
       - name: Check formatting
         run: terraform fmt -check -recursive -diff
 
+  # Infra — Plan
   plan:
     name: Terraform Plan
     needs: [changes, fmt]
-    if: needs.changes.outputs.terraform == 'true'
+    if: |
+      always() &&
+      (needs.fmt.result == 'success' || needs.fmt.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -174,6 +190,24 @@ jobs:
               });
             }
 
+  # PR path — App lint + build only (no deploy)
+  application-pr:
+    name: Application CI (PR)
+    needs: [changes, plan]
+    if: |
+      github.event_name == 'pull_request' &&
+      needs.plan.result == 'success' &&
+      (
+        needs.changes.outputs.terraform == 'true' ||
+        needs.changes.outputs.src == 'true'
+      )
+    uses: ./.github/workflows/app-reusable.yml
+    with:
+      git_ref: ${{ github.sha }}
+      deploy: false
+    secrets: inherit
+
+  # Infra — Release
   apply:
     name: Terraform Apply
     needs: [changes, plan]
@@ -197,30 +231,26 @@ jobs:
       TF_IN_AUTOMATION: true
     steps:
       - uses: actions/checkout@v4
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
-
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-
       - name: Download plan artifact
         uses: actions/download-artifact@v4
         with:
           name: tfplan-${{ github.run_id }}
           path: ${{ env.WORKING_DIR }}
-
       - name: Terraform Init
         run: terraform init -backend-config=${{ env.TF_BACKEND_CONFIG }}
-
       - name: Terraform Apply
         run: terraform apply -no-color -input=false -auto-approve tfplan
 
+  # CHANGED: post-merge — apply infra first, then deploy app
   application:
     name: Application CI/CD
     needs: [changes, plan, apply]
@@ -228,8 +258,7 @@ jobs:
       always() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
-      needs.plan.result != 'failure' &&
-      needs.plan.result != 'cancelled' &&
+      needs.plan.result == 'success' &&
       (
         needs.apply.result == 'success' ||
         (
@@ -237,7 +266,8 @@ jobs:
           needs.changes.outputs.src == 'true'
         )
       )
-    uses: ./.github/workflows/app-cicd-dev.yml
+    uses: ./.github/workflows/app-reusable.yml
     with:
       git_ref: ${{ github.sha }}
+      deploy: true # NEW
     secrets: inherit
