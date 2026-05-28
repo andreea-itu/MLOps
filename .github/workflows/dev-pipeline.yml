@@ -48,7 +48,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       terraform: ${{ steps.filter.outputs.terraform_any_changed }}
-      src: ${{ steps.filter.outputs.src_any_changed }}
+      src_code: ${{ steps.filter.outputs.src_code_any_changed }}
+      data: ${{ steps.filter.outputs.data_any_changed }}
       docs: ${{ steps.filter.outputs.docs_any_changed }}
       workflow: ${{ steps.filter.outputs.workflow_any_changed }}
       docs_files: ${{ steps.docs_list.outputs.files }}
@@ -65,10 +66,13 @@ jobs:
           files_yaml: |
             terraform:
               - terraform/**
-            src:
+            src_code:
               - src/**
+              - '!src/data.dvc'
               - '!src/README.md'
               - '!src/**/README.md'
+            data:
+              - src/data.dvc
             docs:
               - '**/*.md'
               - README*
@@ -158,6 +162,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      id-token: write
     env:
       TF_IN_AUTOMATION: true
     steps:
@@ -170,8 +175,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Terraform Init
@@ -189,6 +193,16 @@ jobs:
             -var-file=${{ env.TF_VAR_FILE }} \
             -out=tfplan \
             | tee plan.txt
+
+      - name: Approval
+        uses: trstringer/manual-approval@v1
+        timeout-minutes: 60
+        with:
+          secret: ${{ github.token }}
+          approvers: andreea-itu
+          issue-title: "Deploy Terraform Plan to dev"
+          issue-body: "Please review the Terraform Plan"
+          exclude-workflow-initiator-as-approver: false
 
       - name: Upload plan artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -255,15 +269,67 @@ jobs:
 
   application-pr:
     name: Application CI (PR)
-    needs: changes
+    needs: [changes, data-check]
     if: |
       github.event_name == 'pull_request' &&
-      needs.changes.outputs.src == 'true'
+      (
+        needs.changes.outputs.src_code == 'true' ||
+        needs.changes.outputs.data == 'true'
+      ) &&
+      (
+        needs.changes.outputs.data != 'true' ||
+        needs.data-check.result == 'success'
+      )
     uses: ./.github/workflows/app-reusable.yml
     with:
       git_ref: ${{ github.sha }}
       deploy: false
     secrets: inherit
+
+  data-check:
+    name: Data DVC Check
+    needs: changes
+    if: needs.changes.outputs.data == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install DVC
+        run: |
+          python -m pip install --upgrade pip
+          pip install "dvc[s3]"
+
+      - name: Show DVC environment
+        run: |
+          dvc version
+          dvc doctor
+
+      - name: Verify DVC config exists
+        run: |
+          test -f .dvc/config
+          test -f src/data.dvc
+
+      - name: Validate DVC file status
+        run: dvc status src/data.dvc
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check remote accessibility
+        run: |
+          dvc pull src/data.dvc --dry || dvc fetch src/data.dvc
 
   apply:
     name: Terraform Apply
@@ -284,6 +350,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
     permissions:
       contents: read
+      id-token: write
     env:
       TF_IN_AUTOMATION: true
     steps:
@@ -294,8 +361,7 @@ jobs:
           terraform_wrapper: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
           aws-region: ${{ env.AWS_REGION }}
       - name: Download plan artifact
         uses: actions/download-artifact@v4
@@ -309,12 +375,19 @@ jobs:
 
   application:
     name: Application CI/CD
-    needs: [changes, plan, apply]
+    needs: [changes, plan, apply, data-check]
     if: |
       always() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
-      needs.changes.outputs.src == 'true' &&
+      (
+        needs.changes.outputs.src_code == 'true' ||
+        needs.changes.outputs.data == 'true'
+      ) &&
+      (
+        needs.changes.outputs.data != 'true' ||
+        needs.data-check.result == 'success'
+      ) &&
       (
         (
           needs.changes.outputs.terraform == 'true' &&
