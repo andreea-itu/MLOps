@@ -1,17 +1,14 @@
 name: Dev — Build on PR, Release on main
 
-# On PR:
-# Dev Pipeline
-# ├── Infra — Lint
-# ├── Infra — Plan
-# └── App — Build          → Application Build & Release / Lint + Build
-
-# On merge to main
-
-# Dev Pipeline
-# ├── Infra — Plan
-# ├── Infra — Release      → terraform apply
-# └── App — Release        → Application Build & Release / Lint + Build + Release
+# PR behavior:
+# - terraform/** changed -> Terraform Format + Plan
+# - src/** changed -> Application CI (lint/build), no deploy
+# - docs/workflows changed -> YAML + Markdown lint only
+#
+# Push to main behavior:
+# - terraform/** changed -> Terraform Format + Plan + Apply
+# - src/** changed -> Application deploy/release
+#   - waits for apply when terraform also changed in same push
 
 on:
   push:
@@ -19,13 +16,17 @@ on:
     paths:
       - "terraform/**"
       - "src/**"
-      - ".github/workflows/dev-pipeline.yml"
+      - ".github/workflows/**"
+      - "**/*.md"
+      - "README*"
   pull_request:
     branches: ["main"]
     paths:
       - "terraform/**"
       - "src/**"
-      - ".github/workflows/dev-pipeline.yml"
+      - ".github/workflows/**"
+      - "**/*.md"
+      - "README*"
   workflow_dispatch:
 
 permissions:
@@ -48,6 +49,8 @@ jobs:
     outputs:
       terraform: ${{ steps.filter.outputs.terraform }}
       src: ${{ steps.filter.outputs.src }}
+      docs: ${{ steps.filter.outputs.docs }}
+      workflow: ${{ steps.filter.outputs.workflow }}
     steps:
       - uses: actions/checkout@v4
 
@@ -56,11 +59,48 @@ jobs:
         with:
           filters: |
             terraform:
-              - 'terraform/**'
+              - "terraform/**"
             src:
-              - 'src/**'
+              - "src/**"
+              - "!src/README.md"
+              - "!src/**/README.md"
+            docs:
+              - "**/*.md"
+              - "README*"
+            workflow:
+              - ".github/workflows/**"
 
-  # Infra — Lint
+  lint-config:
+    name: Lint YAML/Markdown
+    needs: changes
+    if: |
+      needs.changes.outputs.docs == 'true' ||
+      needs.changes.outputs.workflow == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint GitHub workflows (actionlint)
+        uses: reviewdog/action-actionlint@v1
+
+      - name: Lint YAML
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          file_or_dir: .github/workflows
+          config_data: |
+            extends: default
+            rules:
+              line-length:
+                max: 160
+                level: warning
+
+      - name: Lint Markdown
+        uses: DavidAnson/markdownlint-cli2-action@v20
+        with:
+          globs: |
+            **/*.md
+
   fmt:
     name: Terraform Format
     needs: changes
@@ -80,13 +120,12 @@ jobs:
       - name: Check formatting
         run: terraform fmt -check -recursive -diff
 
-  # Infra — Plan
   plan:
     name: Terraform Plan
     needs: [changes, fmt]
     if: |
-      always() &&
-      (needs.fmt.result == 'success' || needs.fmt.result == 'skipped')
+      needs.changes.outputs.terraform == 'true' &&
+      needs.fmt.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -193,24 +232,18 @@ jobs:
               });
             }
 
-  # PR path — App lint + build only (no deploy)
   application-pr:
     name: Application CI (PR)
-    needs: [changes, plan]
+    needs: changes
     if: |
       github.event_name == 'pull_request' &&
-      needs.plan.result == 'success' &&
-      (
-        needs.changes.outputs.terraform == 'true' ||
-        needs.changes.outputs.src == 'true'
-      )
+      needs.changes.outputs.src == 'true'
     uses: ./.github/workflows/app-reusable.yml
     with:
       git_ref: ${{ github.sha }}
       deploy: false
     secrets: inherit
 
-  # Infra — Release
   apply:
     name: Terraform Apply
     needs: [changes, plan]
@@ -253,7 +286,6 @@ jobs:
       - name: Terraform Apply
         run: terraform apply -no-color -input=false -auto-approve tfplan
 
-  # CHANGED: post-merge — apply infra first, then deploy app
   application:
     name: Application CI/CD
     needs: [changes, plan, apply]
@@ -261,16 +293,19 @@ jobs:
       always() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
-      needs.plan.result == 'success' &&
+      needs.changes.outputs.src == 'true' &&
       (
-        needs.apply.result == 'success' ||
         (
-          needs.changes.outputs.terraform != 'true' &&
-          needs.changes.outputs.src == 'true'
+          needs.changes.outputs.terraform == 'true' &&
+          needs.plan.result == 'success' &&
+          needs.apply.result == 'success'
+        ) ||
+        (
+          needs.changes.outputs.terraform != 'true'
         )
       )
     uses: ./.github/workflows/app-reusable.yml
     with:
       git_ref: ${{ github.sha }}
-      deploy: true # NEW
+      deploy: true
     secrets: inherit
