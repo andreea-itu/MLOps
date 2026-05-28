@@ -47,28 +47,45 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      terraform: ${{ steps.filter.outputs.terraform }}
-      src: ${{ steps.filter.outputs.src }}
-      docs: ${{ steps.filter.outputs.docs }}
-      workflow: ${{ steps.filter.outputs.workflow }}
+      terraform: ${{ steps.filter.outputs.terraform_any_changed }}
+      src: ${{ steps.filter.outputs.src_any_changed }}
+      docs: ${{ steps.filter.outputs.docs_any_changed }}
+      workflow: ${{ steps.filter.outputs.workflow_any_changed }}
+      docs_files: ${{ steps.docs_list.outputs.files }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - uses: dorny/paths-filter@v3
+      # Detect files changed in this push/commit only (not the entire PR history).
+      - uses: tj-actions/changed-files@v45
         id: filter
         with:
-          filters: |
+          since_last_remote_commit: true
+          files_yaml: |
             terraform:
-              - "terraform/**"
+              - terraform/**
             src:
-              - "src/**"
-              - "!src/README.md"
-              - "!src/**/README.md"
+              - src/**
+              - '!src/README.md'
+              - '!src/**/README.md'
             docs:
-              - "**/*.md"
-              - "README*"
+              - '**/*.md'
+              - README*
             workflow:
-              - ".github/workflows/**"
+              - .github/workflows/**
+
+      - name: Set changed docs file list
+        if: steps.filter.outputs.docs_any_changed == 'true'
+        id: docs_list
+        env:
+          FILES: ${{ steps.filter.outputs.docs_all_changed_files }}
+        run: |
+          {
+            echo 'files<<EOF'
+            echo "${FILES// /$'\n'}"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
 
   lint-config:
     name: Lint YAML/Markdown
@@ -82,9 +99,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Lint GitHub workflows (actionlint)
+        if: needs.changes.outputs.workflow == 'true'
         uses: reviewdog/action-actionlint@v1
 
       - name: Lint YAML
+        if: needs.changes.outputs.workflow == 'true'
         uses: ibiqlik/action-yamllint@v3
         with:
           file_or_dir: .github/workflows
@@ -95,11 +114,13 @@ jobs:
                 max: 160
                 level: warning
 
-      - name: Lint Markdown
+      - name: Lint changed Markdown
+        if: needs.changes.outputs.docs == 'true'
         uses: DavidAnson/markdownlint-cli2-action@v20
         with:
+          config: .markdownlint-cli2.yamlc
           globs: |
-            **/*.md
+            ${{ needs.changes.outputs.docs_files }}
 
   fmt:
     name: Terraform Format
