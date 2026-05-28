@@ -66,6 +66,8 @@ jobs:
               - 'terraform/**'
             src:
               - 'src/**'
+              - '!src/README.md'
+              - '!src/**/README.md'
 
   fmt:
     name: Infra — Lint

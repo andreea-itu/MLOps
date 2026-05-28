@@ -1,17 +1,14 @@
 name: Dev — Build on PR, Release on main
 
-# On PR:
-# Dev Pipeline
-# ├── Infra — Lint
-# ├── Infra — Plan
-# └── App — Build          → Application Build & Release / Lint + Build
-
-# On merge to main
-
-# Dev Pipeline
-# ├── Infra — Plan
-# ├── Infra — Release      → terraform apply
-# └── App — Release        → Application Build & Release / Lint + Build + Release
+# PR behavior:
+# - terraform/** changed -> Terraform Format + Plan
+# - src/** changed -> Application CI (lint/build), no deploy
+# - docs/workflows changed -> YAML + Markdown lint only
+#
+# Push to main behavior:
+# - terraform/** changed -> Terraform Format + Plan + Apply
+# - src/** changed -> Application deploy/release
+#   - waits for apply when terraform also changed in same push
 
 on:
   push:
@@ -19,13 +16,17 @@ on:
     paths:
       - "terraform/**"
       - "src/**"
-      - ".github/workflows/dev-pipeline.yml"
+      - ".github/workflows/**"
+      - "**/*.md"
+      - "README*"
   pull_request:
     branches: ["main"]
     paths:
       - "terraform/**"
       - "src/**"
-      - ".github/workflows/dev-pipeline.yml"
+      - ".github/workflows/**"
+      - "**/*.md"
+      - "README*"
   workflow_dispatch:
 
 permissions:
@@ -46,19 +47,81 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      terraform: ${{ steps.filter.outputs.terraform }}
-      src: ${{ steps.filter.outputs.src }}
+      terraform: ${{ steps.filter.outputs.terraform_any_changed }}
+      src: ${{ steps.filter.outputs.src_any_changed }}
+      docs: ${{ steps.filter.outputs.docs_any_changed }}
+      workflow: ${{ steps.filter.outputs.workflow_any_changed }}
+      docs_files: ${{ steps.docs_list.outputs.files }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Detect files changed in this push/commit only (not the entire PR history).
+      - uses: tj-actions/changed-files@v45
+        id: filter
+        with:
+          since_last_remote_commit: true
+          files_yaml: |
+            terraform:
+              - terraform/**
+            src:
+              - src/**
+              - '!src/README.md'
+              - '!src/**/README.md'
+            docs:
+              - '**/*.md'
+              - README*
+            workflow:
+              - .github/workflows/**
+
+      - name: Set changed docs file list
+        if: steps.filter.outputs.docs_any_changed == 'true'
+        id: docs_list
+        env:
+          FILES: ${{ steps.filter.outputs.docs_all_changed_files }}
+        run: |
+          {
+            echo 'files<<EOF'
+            echo "${FILES// /$'\n'}"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+  lint-config:
+    name: Lint YAML/Markdown
+    needs: changes
+    if: |
+      needs.changes.outputs.docs == 'true' ||
+      needs.changes.outputs.workflow == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            terraform:
-              - 'terraform/**'
+      - name: Lint GitHub workflows (actionlint)
+        if: needs.changes.outputs.workflow == 'true'
+        uses: reviewdog/action-actionlint@v1
 
-  # Infra — Lint
+      - name: Lint YAML
+        if: needs.changes.outputs.workflow == 'true'
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          file_or_dir: .github/workflows
+          config_data: |
+            extends: default
+            rules:
+              line-length:
+                max: 160
+                level: warning
+
+      - name: Lint changed Markdown
+        if: needs.changes.outputs.docs == 'true'
+        uses: DavidAnson/markdownlint-cli2-action@v20
+        with:
+          config: .markdownlint-cli2.yamlc
+          globs: |
+            ${{ needs.changes.outputs.docs_files }}
+
   fmt:
     name: Terraform Format
     needs: changes
@@ -78,13 +141,12 @@ jobs:
       - name: Check formatting
         run: terraform fmt -check -recursive -diff
 
-  # Infra — Plan
   plan:
     name: Terraform Plan
     needs: [changes, fmt]
     if: |
-      always() &&
-      (needs.fmt.result == 'success' || needs.fmt.result == 'skipped')
+      needs.changes.outputs.terraform == 'true' &&
+      needs.fmt.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -191,24 +253,18 @@ jobs:
               });
             }
 
-  # PR path — App lint + build only (no deploy)
   application-pr:
     name: Application CI (PR)
-    needs: [changes, plan]
+    needs: changes
     if: |
       github.event_name == 'pull_request' &&
-      needs.plan.result == 'success' &&
-      (
-        needs.changes.outputs.terraform == 'true' ||
-        needs.changes.outputs.src == 'true'
-      )
+      needs.changes.outputs.src == 'true'
     uses: ./.github/workflows/app-reusable.yml
     with:
       git_ref: ${{ github.sha }}
       deploy: false
     secrets: inherit
 
-  # Infra — Release
   apply:
     name: Terraform Apply
     needs: [changes, plan]
@@ -251,7 +307,6 @@ jobs:
       - name: Terraform Apply
         run: terraform apply -no-color -input=false -auto-approve tfplan
 
-  # CHANGED: post-merge — apply infra first, then deploy app
   application:
     name: Application CI/CD
     needs: [changes, plan, apply]
@@ -259,16 +314,19 @@ jobs:
       always() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
-      needs.plan.result == 'success' &&
+      needs.changes.outputs.src == 'true' &&
       (
-        needs.apply.result == 'success' ||
         (
-          needs.changes.outputs.terraform != 'true' &&
-          needs.changes.outputs.src == 'true'
+          needs.changes.outputs.terraform == 'true' &&
+          needs.plan.result == 'success' &&
+          needs.apply.result == 'success'
+        ) ||
+        (
+          needs.changes.outputs.terraform != 'true'
         )
       )
     uses: ./.github/workflows/app-reusable.yml
     with:
       git_ref: ${{ github.sha }}
-      deploy: true # NEW
+      deploy: true
     secrets: inherit
