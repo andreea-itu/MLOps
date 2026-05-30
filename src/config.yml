@@ -1,21 +1,27 @@
-data: 
+data:
   train_path: data/train.csv
   test_path: data/test.csv
-  raw_train_path: data/raw/train.csv
-  raw_test_path: data/raw/test.csv
-  processed_train_path: data/processed/train.csv
-  processed_test_path: data/processed/test.csv
 
-train:
-  test_size: 0.2
-  random_state: 42
-  shuffle: true
+  # Not needed in the current flow
+  # raw_train_path: data/raw/train.csv
+  # raw_test_path: data/raw/test.csv
+  # processed_train_path: data/processed/train.csv
+  # processed_test_path: data/processed/test.csv
+
+# train:
+#   test_size: 0.2
+#   random_state: 42
+#   shuffle: true
 
 model:
+  # Define the classifier
   name: DecisionTreeClassifier
   params:
+    # impurity level
     criterion: entropy
+    # no depth limit (tree can grow until leaves are pure or other defaults stop it).
     max_depth: null
+  # directory where the trained pipeline is saved
   store_path: models/
 
   # name: GradientBoostingClassifier
