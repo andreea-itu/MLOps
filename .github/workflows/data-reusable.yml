@@ -38,8 +38,8 @@ jobs:
 
       - name: Verify DVC config exists
         run: |
-          test -f .dvc/config
-          test -f data.dvc
+          test -f .dvc/config && echo root_ok || echo root_missing
+          test -f data.dvc && echo data_dvc_ok || echo data_dvc_missing
 
       - name: Validate DVC file status
         run: dvc status data.dvc
