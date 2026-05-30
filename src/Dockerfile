@@ -5,7 +5,8 @@ FROM python:3.13-slim
 WORKDIR /app
 
 # Copy the application code and models to the working directory
-COPY app.py model_loader.py .
+COPY app.py ./
+COPY utils/ ./utils/
 COPY models/ ./models/
 
 # Copy the requirements file to the working directory
