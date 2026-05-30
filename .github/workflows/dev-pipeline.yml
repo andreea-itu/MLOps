@@ -177,10 +177,10 @@ jobs:
 
       - name: Debug OIDC + secret
         run: |
-          test -n "${{ env.AWS_ROLE_ARN }}" || { echo "::error::AWS_ROLE_ARN_DEV secret is empty"; exit 1; }
+          test -n "${{ vars.AWS_ROLE_ARN }}" || { echo "::error::AWS_ROLE_ARN variable is empty"; exit 1; }
           echo "role configured (length=${#ROLE})"  # don't print the ARN in public logs if you prefer
         env:
-          ROLE: ${{ env.AWS_ROLE_ARN }}
+          ROLE: ${{ vars.AWS_ROLE_ARN }}
 
       - name: Print OIDC subject
         uses: actions/github-script@v7
@@ -197,7 +197,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Terraform Init
@@ -346,7 +346,7 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Check remote accessibility
@@ -383,7 +383,7 @@ jobs:
           terraform_wrapper: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       - name: Download plan artifact
         uses: actions/download-artifact@v4
