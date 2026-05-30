@@ -1,44 +1,100 @@
 import logging
+import tempfile
+import mlflow
+import mlflow.sklearn
 from pipelines.ingest import Ingestion
 from pipelines.clean import Cleaner
 from pipelines.train import Trainer
 from pipelines.predict import Predictor
+from sklearn.metrics import classification_report
+from utils.helper import load_config
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s:%(levelname)s:%(message)s")
 
 
-def main():
-    # Load data
-    ingestion = Ingestion()
-    train, test = ingestion.load_data()
-    logging.info("Data ingestion completed successfully")
+def mlflow_main():
+    # with open("config.yml", "r") as file:
+    #     config = yaml.safe_load(file)
 
-    # Clean data
-    cleaner = Cleaner()
-    train_data = cleaner.clean_data(train)
-    test_data = cleaner.clean_data(test)
-    logging.info("Data cleaning completed successfully")
+    config = load_config()
 
-    # Prepare and train model
-    trainer = Trainer()
-    X_train, y_train = trainer.feature_target_separator(train_data)
-    trainer.train_model(X_train, y_train)
-    trainer.save_model()
-    logging.info("Model training completed successfully")
+    mlflow.set_experiment("Model Training Experiment")
 
-    # Evaluate model
-    predictor = Predictor()
-    X_test, y_test = predictor.feature_target_separator(test_data)
-    accuracy, class_report, roc_auc_score = predictor.evaluate_model(X_test, y_test)
-    logging.info("Model evaluation completed successfully")
+    with mlflow.start_run() as run:
+        # Load data
+        ingestion = Ingestion()
+        train, test = ingestion.load_data()
+        logging.info("Data ingestion completed successfully")
 
-    # Print evaluation results
-    print("\n============= Model Evaluation Results ==============")
-    print(f"Model: {trainer.model_name}")
-    print(f"Accuracy Score: {accuracy:.4f}, ROC AUC Score: {roc_auc_score:.4f}")
-    print(f"\n{class_report}")
-    print("=====================================================\n")
+        # Clean data
+        cleaner = Cleaner()
+        train_data = cleaner.clean_data(train)
+        test_data = cleaner.clean_data(test)
+        logging.info("Data cleaning completed successfully")
+
+        # Prepare and train model
+        trainer = Trainer()
+        X_train, y_train = trainer.feature_target_separator(train_data)
+        trainer.train_model(X_train, y_train)
+        trainer.save_model()
+        logging.info("Model training completed successfully")
+
+        # Evaluate model
+        predictor = Predictor()
+        X_test, y_test = predictor.feature_target_separator(test_data)
+        accuracy, class_report, roc_auc_score = predictor.evaluate_model(X_test, y_test)
+        report = classification_report(
+            y_test, trainer.pipeline.predict(X_test), output_dict=True
+        )
+        logging.info("Model evaluation completed successfully")
+
+        # Tags
+        mlflow.set_tag(
+            "preprocessing", "OneHotEncoder, Standard Scaler, and MinMax Scaler"
+        )
+
+        # Inferring the input signature
+        signature = mlflow.models.infer_signature(
+            model_input=X_train, model_output=trainer.pipeline.predict(X_test)
+        )
+
+        # Log metrics
+        model_params = config["model"]["params"]
+        mlflow.log_params(model_params)
+        mlflow.log_metric("accuracy", accuracy)
+        mlflow.log_metric("roc", roc_auc_score)
+        mlflow.log_metric("precision", report["weighted avg"]["precision"])
+        mlflow.log_metric("recall", report["weighted avg"]["recall"])
+        try:
+            mlflow.sklearn.log_model(
+                trainer.pipeline, name="model", signature=signature
+            )
+            # Register the model when backend supports model registry endpoints.
+            model_name = "insurance_model"
+            model_uri = f"runs:/{run.info.run_id}/model"
+            mlflow.register_model(model_uri, model_name)
+        except Exception as err:
+            logging.warning(
+                "MLflow model logging via API is unavailable; "
+                "falling back to artifact-only logging. Error: %s",
+                err,
+            )
+            with tempfile.TemporaryDirectory() as tmpdir:
+                mlflow.sklearn.save_model(
+                    trainer.pipeline, path=f"{tmpdir}/model", signature=signature
+                )
+                mlflow.log_artifacts(f"{tmpdir}/model", artifact_path="model")
+
+        logging.info("MLflow tracking completed successfully")
+
+        # Print evaluation results
+        print("\n============= Model Evaluation Results ==============")
+        print(f"Model: {trainer.model_name}")
+        print(f"Accuracy Score: {accuracy:.4f}, ROC AUC Score: {roc_auc_score:.4f}")
+        print(f"\n{class_report}")
+        print("=====================================================\n")
 
 
 if __name__ == "__main__":
-    main()
+    mlflow_main()

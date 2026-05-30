@@ -3,6 +3,11 @@ output "github_actions_app_role_arn" {
   value       = module.github_actions_app.role_arn
 }
 
+output "github_actions_terraform_role_arn" {
+  description = "IAM role ARN for Terraform plan/apply in GitHub Actions."
+  value       = module.github_actions_terraform.role_arn
+}
+
 output "ecr_app_repository_name" {
   description = "ECR repository name for the application image."
   value       = module.ecr_repository["app"].repository_name

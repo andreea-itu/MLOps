@@ -1,14 +1,15 @@
 name: Dev — Build on PR, Release on main
 
 # PR behavior:
-# - terraform/** changed -> Terraform Format + Plan
-# - src/** changed -> Application CI (lint/build), no deploy
+# - terraform/** changed -> Infrastructure CI (PR): Format + Plan
+# - src/** changed -> Application CI (PR): Lint + Build, no deploy
+# - src/data.dvc changed -> Data Verification: DVC Check
 # - docs/workflows changed -> YAML + Markdown lint only
 #
 # Push to main behavior:
-# - terraform/** changed -> Terraform Format + Plan + Apply
-# - src/** changed -> Application deploy/release
-#   - waits for apply when terraform also changed in same push
+# - terraform/** changed -> Infrastructure CI/CD: Format + Plan + Apply
+# - src/** changed -> Application CI/CD: Lint + Build + Release
+#   - waits for infrastructure apply when terraform also changed in same push
 
 on:
   push:
@@ -33,13 +34,7 @@ permissions:
   contents: read
   pull-requests: write
   id-token: write
-
-env:
-  TF_VERSION: 1.10.5
-  AWS_REGION: eu-west-1
-  WORKING_DIR: terraform
-  TF_VAR_FILE: environments/dev.tfvars
-  TF_BACKEND_CONFIG: backends/dev.conf
+  issues: write
 
 jobs:
   changes:
@@ -47,43 +42,41 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      terraform: ${{ steps.filter.outputs.terraform_any_changed }}
-      src_code: ${{ steps.filter.outputs.src_code_any_changed }}
-      data: ${{ steps.filter.outputs.data_any_changed }}
-      docs: ${{ steps.filter.outputs.docs_any_changed }}
-      workflow: ${{ steps.filter.outputs.workflow_any_changed }}
+      terraform: ${{ steps.filter.outputs.terraform }}
+      src_code: ${{ steps.filter.outputs.src_code }}
+      data: ${{ steps.filter.outputs.data }}
+      docs: ${{ steps.filter.outputs.docs }}
+      workflow: ${{ steps.filter.outputs.workflow }}
       docs_files: ${{ steps.docs_list.outputs.files }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # Detect files changed in this push/commit only (not the entire PR history).
-      - uses: tj-actions/changed-files@v45
+      - uses: dorny/paths-filter@v3
         id: filter
         with:
-          since_last_remote_commit: true
-          files_yaml: |
+          filters: |
             terraform:
-              - terraform/**
+              - 'terraform/**'
             src_code:
-              - src/**
+              - 'src/**'
               - '!src/data.dvc'
               - '!src/README.md'
               - '!src/**/README.md'
             data:
-              - src/data.dvc
+              - 'src/data.dvc'
             docs:
               - '**/*.md'
-              - README*
+              - 'README*'
             workflow:
-              - .github/workflows/**
+              - '.github/workflows/**'
 
       - name: Set changed docs file list
-        if: steps.filter.outputs.docs_any_changed == 'true'
+        if: steps.filter.outputs.docs == 'true'
         id: docs_list
         env:
-          FILES: ${{ steps.filter.outputs.docs_all_changed_files }}
+          FILES: ${{ steps.filter.outputs.docs_files }}
         run: |
           {
             echo 'files<<EOF'
@@ -117,6 +110,11 @@ jobs:
               line-length:
                 max: 160
                 level: warning
+              document-start: disable
+              truthy:
+                check-keys: false
+              new-lines:
+                type: unix
 
       - name: Lint changed Markdown
         if: needs.changes.outputs.docs == 'true'
@@ -126,280 +124,52 @@ jobs:
           globs: |
             ${{ needs.changes.outputs.docs_files }}
 
-  fmt:
-    name: Terraform Format
+  infrastructure:
+    name: ${{ github.event_name == 'pull_request' && 'Infrastructure CI (PR)' || 'Infrastructure CI/CD' }}
     needs: changes
-    if: needs.changes.outputs.terraform == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: ${{ env.WORKING_DIR }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Check formatting
-        run: terraform fmt -check -recursive -diff
-
-  plan:
-    name: Terraform Plan
-    needs: [changes, fmt]
     if: |
-      needs.changes.outputs.terraform == 'true' &&
-      needs.fmt.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    concurrency:
-      group: tf-dev-plan-${{ github.head_ref || github.ref }}
-      cancel-in-progress: true
-    defaults:
-      run:
-        working-directory: ${{ env.WORKING_DIR }}
-    permissions:
-      contents: read
-      pull-requests: write
-      id-token: write
-    env:
-      TF_IN_AUTOMATION: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-          terraform_wrapper: false
-
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Terraform Init
-        run: terraform init -backend-config=${{ env.TF_BACKEND_CONFIG }}
-
-      - name: Terraform Validate
-        run: terraform validate -no-color
-
-      - name: Terraform Plan
-        run: |
-          set -o pipefail
-          terraform plan \
-            -no-color \
-            -input=false \
-            -var-file=${{ env.TF_VAR_FILE }} \
-            -out=tfplan \
-            | tee plan.txt
-
-      - name: Approval
-        uses: trstringer/manual-approval@v1
-        timeout-minutes: 60
-        with:
-          secret: ${{ github.token }}
-          approvers: andreea-itu
-          issue-title: "Deploy Terraform Plan to dev"
-          issue-body: "Please review the Terraform Plan"
-          exclude-workflow-initiator-as-approver: false
-
-      - name: Upload plan artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan-${{ github.run_id }}
-          path: |
-            ${{ env.WORKING_DIR }}/tfplan
-            ${{ env.WORKING_DIR }}/plan.txt
-          retention-days: 5
-          if-no-files-found: error
-
-      - name: Comment plan on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const planPath = '${{ env.WORKING_DIR }}/plan.txt';
-            let planText = '_Plan output unavailable._';
-            try {
-              const plan = fs.readFileSync(planPath, 'utf8');
-              planText = plan.length > 60000
-                ? plan.slice(0, 60000) + '\n\n… _(truncated)_'
-                : plan;
-            } catch (e) {
-              // keep default message
-            }
-
-            const marker = '<!-- terraform-plan-dev -->';
-            const body = [
-              marker,
-              '### Terraform Plan (dev)',
-              '',
-              '```diff',
-              planText,
-              '```',
-              '',
-              `*Pusher: @${{ github.actor }}, Action: \`${{ github.workflow }}\`*`,
-            ].join('\n');
-
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const existing = comments.find((c) => c.body?.includes(marker));
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
-
-  application-pr:
-    name: Application CI (PR)
-    needs: [changes, data-check]
-    if: |
-      github.event_name == 'pull_request' &&
-      (
-        needs.changes.outputs.src_code == 'true' ||
-        needs.changes.outputs.data == 'true'
-      ) &&
-      (
-        needs.changes.outputs.data != 'true' ||
-        needs.data-check.result == 'success'
+      needs.changes.outputs.terraform == 'true' && (
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'push' && github.ref == 'refs/heads/main')
       )
-    uses: ./.github/workflows/app-reusable.yml
+    uses: ./.github/workflows/terraform-reusable.yml
     with:
-      git_ref: ${{ github.sha }}
-      deploy: false
+      apply: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     secrets: inherit
 
-  data-check:
-    name: Data DVC Check
+  data-verification:
+    name: Data Verification
     needs: changes
     if: needs.changes.outputs.data == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install DVC
-        run: |
-          python -m pip install --upgrade pip
-          pip install "dvc[s3]"
-
-      - name: Show DVC environment
-        run: |
-          dvc version
-          dvc doctor
-
-      - name: Verify DVC config exists
-        run: |
-          test -f .dvc/config
-          test -f src/data.dvc
-
-      - name: Validate DVC file status
-        run: dvc status src/data.dvc
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Check remote accessibility
-        run: |
-          dvc pull src/data.dvc --dry || dvc fetch src/data.dvc
-
-  apply:
-    name: Terraform Apply
-    needs: [changes, plan]
-    if: |
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      needs.changes.outputs.terraform == 'true' &&
-      needs.plan.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: dev
-    concurrency:
-      group: tf-dev-apply
-      cancel-in-progress: false
-    defaults:
-      run:
-        working-directory: ${{ env.WORKING_DIR }}
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      TF_IN_AUTOMATION: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-          terraform_wrapper: false
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Download plan artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan-${{ github.run_id }}
-          path: ${{ env.WORKING_DIR }}
-      - name: Terraform Init
-        run: terraform init -backend-config=${{ env.TF_BACKEND_CONFIG }}
-      - name: Terraform Apply
-        run: terraform apply -no-color -input=false -auto-approve tfplan
+    uses: ./.github/workflows/data-reusable.yml
+    secrets: inherit
 
   application:
-    name: Application CI/CD
-    needs: [changes, plan, apply, data-check]
+    name: ${{ github.event_name == 'pull_request' && 'Application CI (PR)' || 'Application CI/CD' }}
+    needs: [changes, infrastructure, data-verification]
     if: |
       always() &&
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
       (
         needs.changes.outputs.src_code == 'true' ||
         needs.changes.outputs.data == 'true'
       ) &&
       (
         needs.changes.outputs.data != 'true' ||
-        needs.data-check.result == 'success'
+        needs.data-verification.result == 'success'
       ) &&
       (
+        github.event_name == 'pull_request' ||
         (
-          needs.changes.outputs.terraform == 'true' &&
-          needs.plan.result == 'success' &&
-          needs.apply.result == 'success'
-        ) ||
-        (
-          needs.changes.outputs.terraform != 'true'
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          (
+            needs.changes.outputs.terraform != 'true' ||
+            needs.infrastructure.result == 'success'
+          )
         )
       )
     uses: ./.github/workflows/app-reusable.yml
     with:
       git_ref: ${{ github.sha }}
-      deploy: true
+      deploy: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     secrets: inherit

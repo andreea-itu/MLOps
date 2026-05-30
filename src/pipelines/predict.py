@@ -1,18 +1,14 @@
 import os
 import joblib
+from utils.helper import load_config
 from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
 
 
 class Predictor:
     def __init__(self):
-        self.model_path = self.load_config()["model"]["store_path"]
+        self.config = load_config()
+        self.model_path = self.config["model"]["store_path"]
         self.pipeline = self.load_model()
-
-    def load_config(self):
-        import yaml
-
-        with open("config.yml", "r") as config_file:
-            return yaml.safe_load(config_file)
 
     def load_model(self):
         model_file_path = os.path.join(self.model_path, "model.pkl")

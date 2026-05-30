@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import pandas as pd
 
-from model_loader import load_inference_model
+from utils.model_loader import load_inference_model
 
 app = FastAPI()
 
@@ -22,6 +22,11 @@ model = load_inference_model()
 
 @app.get("/")
 async def root():
+    return {"Application: ": "Insurance Classifier"}
+
+
+@app.get("/healthcheck")
+async def healthcheck():
     return {"health_check": "OK"}
 
 
