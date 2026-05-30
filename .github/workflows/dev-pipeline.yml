@@ -173,6 +173,26 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
+      - name: Debug OIDC + secret
+        run: |
+          test -n "${{ secrets.AWS_ROLE_ARN_DEV }}" || { echo "::error::AWS_ROLE_ARN_DEV secret is empty"; exit 1; }
+          echo "role configured (length=${#ROLE})"  # don't print the ARN in public logs if you prefer
+        env:
+          ROLE: ${{ secrets.AWS_ROLE_ARN_DEV }}
+
+      - name: Print OIDC subject
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+            const url = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+            const resp = await fetch(`${url}&audience=sts.amazonaws.com`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            const jwt = (await resp.json()).value;
+            const payload = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString());
+            core.info(`sub=${payload.sub}`);
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
