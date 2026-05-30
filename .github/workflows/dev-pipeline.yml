@@ -203,16 +203,6 @@ jobs:
             -out=tfplan \
             | tee plan.txt
 
-      - name: Approval
-        uses: trstringer/manual-approval@v1
-        timeout-minutes: 60
-        with:
-          secret: ${{ github.token }}
-          approvers: andreea-itu
-          issue-title: "Deploy Terraform Plan to dev"
-          issue-body: "Please review the Terraform Plan"
-          exclude-workflow-initiator-as-approver: false
-
       - name: Upload plan artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
@@ -349,7 +339,7 @@ jobs:
       needs.changes.outputs.terraform == 'true' &&
       needs.plan.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     environment: dev
     concurrency:
       group: tf-dev-apply
@@ -360,9 +350,20 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      issues: write
     env:
       TF_IN_AUTOMATION: true
     steps:
+      - name: Approval
+        uses: trstringer/manual-approval@v1
+        timeout-minutes: 60
+        with:
+          secret: ${{ github.token }}
+          approvers: andreea-itu
+          issue-title: "Deploy Terraform to dev"
+          issue-body: "Please review the Terraform plan artifact before apply."
+          exclude-workflow-initiator-as-approver: false
+
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
         with:
