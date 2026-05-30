@@ -7,7 +7,7 @@ class Ingestion:
         self.config = load_config()
 
     def load_data(self):
-        ''' Load the the train and test data. '''
+        """Load the the train and test data."""
         train_data_path = self.config["data"]["train_path"]
         test_data_path = self.config["data"]["test_path"]
         train_data = pd.read_csv(train_data_path)

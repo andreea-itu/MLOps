@@ -1,6 +1,5 @@
 import logging
 import tempfile
-import yaml
 import mlflow
 import mlflow.sklearn
 from pipelines.ingest import Ingestion
@@ -12,6 +11,7 @@ from utils.helper import load_config
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s:%(levelname)s:%(message)s")
+
 
 def mlflow_main():
     # with open("config.yml", "r") as file:
@@ -44,7 +44,9 @@ def mlflow_main():
         predictor = Predictor()
         X_test, y_test = predictor.feature_target_separator(test_data)
         accuracy, class_report, roc_auc_score = predictor.evaluate_model(X_test, y_test)
-        report = classification_report(y_test, trainer.pipeline.predict(X_test), output_dict=True)
+        report = classification_report(
+            y_test, trainer.pipeline.predict(X_test), output_dict=True
+        )
         logging.info("Model evaluation completed successfully")
 
         # Tags
@@ -54,8 +56,7 @@ def mlflow_main():
 
         # Inferring the input signature
         signature = mlflow.models.infer_signature(
-            model_input=X_train,
-            model_output=trainer.pipeline.predict(X_test)
+            model_input=X_train, model_output=trainer.pipeline.predict(X_test)
         )
 
         # Log metrics
@@ -93,6 +94,7 @@ def mlflow_main():
         print(f"Accuracy Score: {accuracy:.4f}, ROC AUC Score: {roc_auc_score:.4f}")
         print(f"\n{class_report}")
         print("=====================================================\n")
+
 
 if __name__ == "__main__":
     mlflow_main()

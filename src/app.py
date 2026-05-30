@@ -24,9 +24,11 @@ model = load_inference_model()
 async def root():
     return {"Application: ": "Insurance Classifier"}
 
+
 @app.get("/healthcheck")
 async def healthcheck():
     return {"health_check": "OK"}
+
 
 @app.post("/predict")
 async def predict(input_data: InputData):

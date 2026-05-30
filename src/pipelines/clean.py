@@ -4,10 +4,10 @@ from sklearn.impute import SimpleImputer
 
 class Cleaner:
     def __init__(self):
-        #  creates a missing-value filler and stores it on the Cleaner instance 
+        #  creates a missing-value filler and stores it on the Cleaner instance
         # so clean_data can reuse it for Gender and RegionID.
-        # strategy="most_frequent"  - the value that appears most often in the column. 
-        # missing_values=np.nan     - Only treat NaN as missing. 
+        # strategy="most_frequent"  - the value that appears most often in the column.
+        # missing_values=np.nan     - Only treat NaN as missing.
         self.imputer = SimpleImputer(strategy="most_frequent", missing_values=np.nan)
 
     def clean_data(self, data):
@@ -26,7 +26,7 @@ class Cleaner:
             .astype(float)
         )
 
-        #  if many rows have missing Gender, they all get the most common gender in that dataset
+        # if many rows have missing Gender, they all get the most common gender
         # Same idea for RegionID with the most common region id
         for col in ["Gender", "RegionID"]:
             data[col] = self.imputer.fit_transform(data[[col]]).flatten()

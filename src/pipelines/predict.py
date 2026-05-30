@@ -10,7 +10,6 @@ class Predictor:
         self.model_path = self.config["model"]["store_path"]
         self.pipeline = self.load_model()
 
-
     def load_model(self):
         model_file_path = os.path.join(self.model_path, "model.pkl")
         return joblib.load(model_file_path)

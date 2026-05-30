@@ -12,7 +12,8 @@ from sklearn.tree import DecisionTreeClassifier
 
 
 class Trainer:
-    """Train a classifier with preprocessing, SMOTE, and config-driven hyperparameters."""
+    """Train a classifier with preprocessing,
+    oversampling with SMOTE, and config-driven hyperparameters."""
 
     def __init__(self):
         self.config = load_config()
@@ -53,7 +54,8 @@ class Trainer:
         return pipeline
 
     def feature_target_separator(self, data):
-        """Split cleaned DataFrame into features (all but last column) and target (last column)."""
+        """Split cleaned DataFrame into features
+        (all but last column) and target (last column)."""
         X = data.iloc[:, :-1]
         y = data.iloc[:, -1]
         return X, y
@@ -63,7 +65,8 @@ class Trainer:
         self.pipeline.fit(X_train, y_train)
 
     def save_model(self):
-        """Write the fitted pipeline to {store_path}/model.pkl (used by predict and app)."""
+        """Write the fitted pipeline to {store_path}/model.pkl
+        (used by predict and app)."""
         os.makedirs(self.model_path, exist_ok=True)
         model_file_path = os.path.join(self.model_path, "model.pkl")
         joblib.dump(self.pipeline, model_file_path)
