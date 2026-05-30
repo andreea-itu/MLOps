@@ -175,29 +175,16 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      - name: Debug OIDC + secret
+      - name: Verify Terraform OIDC configuration
         run: |
-          test -n "${{ vars.AWS_ROLE_ARN }}" || { echo "::error::AWS_ROLE_ARN variable is empty"; exit 1; }
-          echo "role configured (length=${#ROLE})"  # don't print the ARN in public logs if you prefer
-        env:
-          ROLE: ${{ vars.AWS_ROLE_ARN }}
-
-      - name: Print OIDC subject
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const token = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
-            const url = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
-            const resp = await fetch(`${url}&audience=sts.amazonaws.com`, {
-              headers: { Authorization: `Bearer ${token}` },
-            });
-            const jwt = (await resp.json()).value;
-            const payload = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString());
-            core.info(`sub=${payload.sub}`);
+          test -n "${{ vars.AWS_TERRAFORM_ROLE_ARN }}" || {
+            echo "::error::Set repository variable AWS_TERRAFORM_ROLE_ARN (terraform output github_actions_terraform_role_arn)"
+            exit 1
+          }
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Terraform Init
@@ -383,7 +370,7 @@ jobs:
           terraform_wrapper: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       - name: Download plan artifact
         uses: actions/download-artifact@v4
