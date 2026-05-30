@@ -35,7 +35,7 @@ jobs:
 
       - name: Verify DVC config exists
         run: |
-          test -f .dvc/config
+          test -f src/.dvc/config
           test -f src/data.dvc
 
       - name: Validate DVC file status
