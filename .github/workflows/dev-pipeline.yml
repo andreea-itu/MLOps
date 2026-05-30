@@ -47,45 +47,41 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      terraform: ${{ steps.filter.outputs.terraform_any_changed }}
-      src_code: ${{ steps.filter.outputs.src_code_any_changed }}
-      data: ${{ steps.filter.outputs.data_any_changed }}
-      docs: ${{ steps.filter.outputs.docs_any_changed }}
-      workflow: ${{ steps.filter.outputs.workflow_any_changed }}
+      terraform: ${{ steps.filter.outputs.terraform }}
+      src_code: ${{ steps.filter.outputs.src_code }}
+      data: ${{ steps.filter.outputs.data }}
+      docs: ${{ steps.filter.outputs.docs }}
+      workflow: ${{ steps.filter.outputs.workflow }}
       docs_files: ${{ steps.docs_list.outputs.files }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # PR: diff head vs base (full PR scope). Push to main: last commit only.
-      - uses: tj-actions/changed-files@v45
+      - uses: dorny/paths-filter@v3
         id: filter
         with:
-          since_last_remote_commit: ${{ github.event_name != 'pull_request' }}
-          base_sha: ${{ github.event.pull_request.base.sha }}
-          sha: ${{ github.event.pull_request.head.sha }}
-          files_yaml: |
+          filters: |
             terraform:
-              - terraform/**
+              - 'terraform/**'
             src_code:
-              - src/**
+              - 'src/**'
               - '!src/data.dvc'
               - '!src/README.md'
               - '!src/**/README.md'
             data:
-              - src/data.dvc
+              - 'src/data.dvc'
             docs:
               - '**/*.md'
-              - README*
+              - 'README*'
             workflow:
-              - .github/workflows/**
+              - '.github/workflows/**'
 
       - name: Set changed docs file list
-        if: steps.filter.outputs.docs_any_changed == 'true'
+        if: steps.filter.outputs.docs == 'true'
         id: docs_list
         env:
-          FILES: ${{ steps.filter.outputs.docs_all_changed_files }}
+          FILES: ${{ steps.filter.outputs.docs_files }}
         run: |
           {
             echo 'files<<EOF'
@@ -174,13 +170,6 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
-
-      - name: Verify Terraform OIDC configuration
-        run: |
-          test -n "${{ vars.AWS_TERRAFORM_ROLE_ARN }}" || {
-            echo "::error::Set repository variable AWS_TERRAFORM_ROLE_ARN (terraform output github_actions_terraform_role_arn)"
-            exit 1
-          }
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:

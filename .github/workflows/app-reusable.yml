@@ -1,6 +1,5 @@
 name: Application Build & Release
 
-# CHANGED: invoked by infra workflow only (+ manual dispatch)
 on:
   workflow_call:
     inputs:
@@ -9,7 +8,7 @@ on:
         type: string
         required: false
         default: main
-      deploy: # NEW
+      deploy:
         description: Push image to ECR and redeploy ECS (false on PR)
         type: boolean
         required: false
@@ -22,13 +21,11 @@ on:
         type: string
         required: false
         default: main
-      deploy: # NEW
+      deploy:
         description: Push image to ECR and redeploy ECS
         type: boolean
         required: false
         default: true
-
-  # REMOVED: standalone pull_request trigger (infra workflow orchestrates PR checks)
 
 permissions:
   contents: read
@@ -77,14 +74,12 @@ jobs:
       - name: Ruff format
         run: poetry run ruff format --check .
 
-  # Retrain + Docker build on PR; push + deploy on merge
   build:
-    name: Retrain, Build & Release
+    name: Build
     needs: lint
     if: needs.lint.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    environment: dev
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
@@ -98,10 +93,6 @@ jobs:
         run: |
           test -n "${{ vars.AWS_ROLE_ARN }}" || {
             echo "::error::Set repository variable AWS_ROLE_ARN (terraform output github_actions_app_role_arn)"
-            exit 1
-          }
-          test -n "${{ vars.ECR_REPOSITORY }}" || {
-            echo "::error::Set repository variable ECR_REPOSITORY (e.g. ecr-app-dev)"
             exit 1
           }
 
@@ -118,16 +109,6 @@ jobs:
 
       - name: Install dependencies
         run: poetry install --no-interaction --no-root
-
-      - name: Print OIDC subject
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const token = await core.getIDToken('sts.amazonaws.com');
-            const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
-            core.info(`sub=${payload.sub}`);
-            core.info(`aud=${payload.aud}`);
-            core.info(`iss=${payload.iss}`);
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -151,13 +132,66 @@ jobs:
       - name: Build Docker image
         run: docker build -t app:ci .
 
+      - name: Save Docker image
+        run: docker save app:ci | gzip > /tmp/app-ci.tar.gz
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-${{ github.run_id }}
+          path: /tmp/app-ci.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+
+  release:
+    name: Release Application
+    needs: build
+    if: |
+      needs.build.result == 'success' &&
+      (inputs.deploy == true || github.event.inputs.deploy == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: dev
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      - name: Verify release configuration
+        run: |
+          test -n "${{ vars.AWS_ROLE_ARN }}" || {
+            echo "::error::Set repository variable AWS_ROLE_ARN"
+            exit 1
+          }
+          test -n "${{ vars.ECR_REPOSITORY }}" || {
+            echo "::error::Set repository variable ECR_REPOSITORY (e.g. ecr-app-dev)"
+            exit 1
+          }
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref || github.event.inputs.git_ref || github.ref }}
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-${{ github.run_id }}
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load -i /tmp/app-ci.tar.gz
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
       - name: Login to Amazon ECR
-        if: inputs.deploy == true || github.event.inputs.deploy == 'true'
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Push image to ECR
-        if: inputs.deploy == true || github.event.inputs.deploy == 'true'
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           REPOSITORY: ${{ vars.ECR_REPOSITORY }}
@@ -165,17 +199,12 @@ jobs:
           IMAGE_TAG="$(git rev-parse --short=7 HEAD)"
           IMAGE_URI="${REGISTRY}/${REPOSITORY}"
           docker tag app:ci "${IMAGE_URI}:${IMAGE_TAG}"
-          docker tag app:ci "${IMAGE_URI}:latest"
           docker push "${IMAGE_URI}:${IMAGE_TAG}"
-          docker push "${IMAGE_URI}:latest"
-          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_ENV"
           echo "image_uri=${IMAGE_URI}:${IMAGE_TAG}" >> "$GITHUB_ENV"
           echo "Pushed ${IMAGE_URI}:${IMAGE_TAG} and :latest"
 
       - name: Update ECS task definition and deploy
-        if: |
-          (inputs.deploy == true || github.event.inputs.deploy == 'true') &&
-          vars.ECS_CLUSTER_NAME != '' && vars.ECS_SERVICE_NAME != ''
+        if: vars.ECS_CLUSTER_NAME != '' && vars.ECS_SERVICE_NAME != ''
         env:
           IMAGE_URI: ${{ env.image_uri }}
         run: |
