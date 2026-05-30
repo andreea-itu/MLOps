@@ -110,6 +110,11 @@ jobs:
               line-length:
                 max: 160
                 level: warning
+              document-start: disable
+              truthy:
+                check-keys: false
+              new-lines:
+                type: unix
 
       - name: Lint changed Markdown
         if: needs.changes.outputs.docs == 'true'
@@ -119,27 +124,17 @@ jobs:
           globs: |
             ${{ needs.changes.outputs.docs_files }}
 
-  infrastructure-pr:
-    name: Infrastructure CI (PR)
-    needs: changes
-    if: |
-      github.event_name == 'pull_request' &&
-      needs.changes.outputs.terraform == 'true'
-    uses: ./.github/workflows/terraform-reusable.yml
-    with:
-      apply: false
-    secrets: inherit
-
   infrastructure:
-    name: Infrastructure CI/CD
+    name: ${{ github.event_name == 'pull_request' && 'Infrastructure CI (PR)' || 'Infrastructure CI/CD' }}
     needs: changes
     if: |
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      needs.changes.outputs.terraform == 'true'
+      needs.changes.outputs.terraform == 'true' && (
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      )
     uses: ./.github/workflows/terraform-reusable.yml
     with:
-      apply: true
+      apply: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     secrets: inherit
 
   data-verification:
@@ -149,33 +144,11 @@ jobs:
     uses: ./.github/workflows/data-reusable.yml
     secrets: inherit
 
-  application-pr:
-    name: Application CI (PR)
-    needs: [changes, data-verification]
-    if: |
-      always() &&
-      github.event_name == 'pull_request' &&
-      (
-        needs.changes.outputs.src_code == 'true' ||
-        needs.changes.outputs.data == 'true'
-      ) &&
-      (
-        needs.changes.outputs.data != 'true' ||
-        needs.data-verification.result == 'success'
-      )
-    uses: ./.github/workflows/app-reusable.yml
-    with:
-      git_ref: ${{ github.sha }}
-      deploy: false
-    secrets: inherit
-
   application:
-    name: Application CI/CD
+    name: ${{ github.event_name == 'pull_request' && 'Application CI (PR)' || 'Application CI/CD' }}
     needs: [changes, infrastructure, data-verification]
     if: |
       always() &&
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
       (
         needs.changes.outputs.src_code == 'true' ||
         needs.changes.outputs.data == 'true'
@@ -185,11 +158,18 @@ jobs:
         needs.data-verification.result == 'success'
       ) &&
       (
-        needs.changes.outputs.terraform != 'true' ||
-        needs.infrastructure.result == 'success'
+        github.event_name == 'pull_request' ||
+        (
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          (
+            needs.changes.outputs.terraform != 'true' ||
+            needs.infrastructure.result == 'success'
+          )
+        )
       )
     uses: ./.github/workflows/app-reusable.yml
     with:
       git_ref: ${{ github.sha }}
-      deploy: true
+      deploy: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     secrets: inherit
