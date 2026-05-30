@@ -259,6 +259,7 @@ jobs:
     name: Application CI (PR)
     needs: [changes, data-check]
     if: |
+      always() &&
       github.event_name == 'pull_request' &&
       (
         needs.changes.outputs.src_code == 'true' ||
