@@ -15,6 +15,9 @@ jobs:
     name: DVC Check
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: src
     steps:
       - uses: actions/checkout@v4
 
@@ -35,11 +38,11 @@ jobs:
 
       - name: Verify DVC config exists
         run: |
-          test -f src/.dvc/config
-          test -f src/data.dvc
+          test -f .dvc/config
+          test -f data.dvc
 
       - name: Validate DVC file status
-        run: dvc status src/data.dvc
+        run: dvc status data.dvc
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -49,4 +52,4 @@ jobs:
 
       - name: Check remote accessibility
         run: |
-          dvc pull src/data.dvc --dry || dvc fetch src/data.dvc
+          dvc pull data.dvc --dry || dvc fetch data.dvc
