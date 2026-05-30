@@ -156,6 +156,11 @@ jobs:
       run:
         working-directory: ${{ env.WORKING_DIR }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref || github.event.inputs.git_ref || github.ref }}
+
       - name: Verify release configuration
         run: |
           test -n "${{ vars.AWS_ROLE_ARN }}" || {
@@ -166,11 +171,6 @@ jobs:
             echo "::error::Set repository variable ECR_REPOSITORY (e.g. ecr-app-dev)"
             exit 1
           }
-
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.git_ref || github.event.inputs.git_ref || github.ref }}
 
       - name: Download Docker image artifact
         uses: actions/download-artifact@v4
