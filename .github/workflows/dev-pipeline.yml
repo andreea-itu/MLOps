@@ -58,11 +58,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Detect files changed in this push/commit only (not the entire PR history).
+      # PR: diff head vs base (full PR scope). Push to main: last commit only.
       - uses: tj-actions/changed-files@v45
         id: filter
         with:
-          since_last_remote_commit: true
+          since_last_remote_commit: ${{ github.event_name != 'pull_request' }}
+          base_sha: ${{ github.event.pull_request.base.sha }}
+          sha: ${{ github.event.pull_request.head.sha }}
           files_yaml: |
             terraform:
               - terraform/**
