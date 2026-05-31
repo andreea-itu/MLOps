@@ -27,9 +27,9 @@ locals {
       ]
     }] : [],
     local.ecs_deploy_enabled ? [{
-      Sid      = "ECSPassRole"
-      Effect   = "Allow"
-      Action   = ["iam:PassRole"]
+      Sid    = "ECSPassRole"
+      Effect = "Allow"
+      Action = ["iam:PassRole"]
       Resource = [
         "arn:aws:iam::${var.account_id}:role/${var.ecs_service_name}-execution",
         "arn:aws:iam::${var.account_id}:role/${var.ecs_service_name}-task",
