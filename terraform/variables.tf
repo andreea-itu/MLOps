@@ -63,3 +63,15 @@ variable "account_id" {
   description = "AWS account ID."
   type        = string
 }
+
+variable "ecs_cluster_name" {
+  description = "ECS cluster name for GitHub Actions deploy workflow."
+  type        = string
+  default     = ""
+}
+
+variable "ecs_service_name" {
+  description = "ECS service name for GitHub Actions deploy workflow."
+  type        = string
+  default     = ""
+}

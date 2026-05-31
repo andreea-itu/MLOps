@@ -51,3 +51,6 @@ ecs_services = [
     }
   }
 ]
+
+ecs_cluster_name = "ecs-app-prd"
+ecs_service_name = "ecs-app-prd"

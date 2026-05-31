@@ -52,3 +52,6 @@ ecs_services = [
     }
   }
 ]
+
+ecs_cluster_name = "ecs-app-dev"
+ecs_service_name = "ecs-app-dev"

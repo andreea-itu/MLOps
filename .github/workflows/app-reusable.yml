@@ -231,11 +231,31 @@ jobs:
             --output text \
             --region "${{ env.AWS_REGION }}")"
 
-          aws ecs update-service \
+          UPDATE="$(aws ecs update-service \
             --cluster "${{ vars.ECS_CLUSTER_NAME }}" \
             --service "${{ vars.ECS_SERVICE_NAME }}" \
             --task-definition "${NEW_TASK_DEF_ARN}" \
             --force-new-deployment \
+            --region "${{ env.AWS_REGION }}" \
+            --output json)"
+
+          echo "ECS service update initiated for ${IMAGE_URI}"
+          echo "${UPDATE}" | jq -r '.service | "  Service: \(.serviceName)\n  Status: \(.status)\n  Task definition: \(.taskDefinition)"'
+          echo "Deployments:"
+          echo "${UPDATE}" | jq -r '.service.deployments[] | "  - id=\(.id) status=\(.status) rollout=\(.rolloutState // "n/a") running=\(.runningCount)/\(.desiredCount) taskDef=\(.taskDefinition)"'
+
+          echo "Waiting for ECS service to become stable..."
+          aws ecs wait services-stable \
+            --cluster "${{ vars.ECS_CLUSTER_NAME }}" \
+            --services "${{ vars.ECS_SERVICE_NAME }}" \
             --region "${{ env.AWS_REGION }}"
 
-          echo "ECS service updated to ${IMAGE_URI}"
+          SERVICE="$(aws ecs describe-services \
+            --cluster "${{ vars.ECS_CLUSTER_NAME }}" \
+            --services "${{ vars.ECS_SERVICE_NAME }}" \
+            --region "${{ env.AWS_REGION }}")"
+
+          echo "ECS service status:"
+          echo "${SERVICE}" | jq -r '.services[0] | "  Service: \(.serviceName)\n  Status: \(.status)\n  Running/Desired: \(.runningCount)/\(.desiredCount)\n  Pending: \(.pendingCount)\n  Task definition: \(.taskDefinition)"'
+          echo "Deployments:"
+          echo "${SERVICE}" | jq -r '.services[0].deployments[] | "  - \(.status): running=\(.runningCount) desired=\(.desiredCount) rollout=\(.rolloutState // "n/a") taskDef=\(.taskDefinition)"'
