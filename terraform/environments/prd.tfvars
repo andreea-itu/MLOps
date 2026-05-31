@@ -2,8 +2,6 @@ environment = "prd"
 aws_region  = "eu-west-1"
 account_id  = "082721030339"
 
-ecr_repository_name = "ecr-app-prd"
-
 s3_buckets = [
   {
     key = "mlops-postgrade-datastore"

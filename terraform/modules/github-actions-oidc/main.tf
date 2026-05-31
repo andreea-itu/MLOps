@@ -12,19 +12,25 @@ locals {
 
   ecs_deploy_statements = concat(
     local.ecs_deploy_enabled ? [{
-      Sid    = "ECSDeploy"
+      Sid    = "ECSDeployService"
       Effect = "Allow"
       Action = [
         "ecs:DescribeServices",
-        "ecs:DescribeTaskDefinition",
-        "ecs:RegisterTaskDefinition",
         "ecs:UpdateService",
       ]
       Resource = [
         "arn:aws:ecs:eu-west-1:${var.account_id}:cluster/${var.ecs_cluster_name}",
         "arn:aws:ecs:eu-west-1:${var.account_id}:service/${var.ecs_cluster_name}/${var.ecs_service_name}",
-        "arn:aws:ecs:eu-west-1:${var.account_id}:task-definition/${var.ecs_service_name}:*",
       ]
+    }] : [],
+    local.ecs_deploy_enabled ? [{
+      Sid    = "ECSDeployTaskDefinition"
+      Effect = "Allow"
+      Action = [
+        "ecs:DescribeTaskDefinition",
+        "ecs:RegisterTaskDefinition",
+      ]
+      Resource = "*"
     }] : [],
     local.ecs_deploy_enabled ? [{
       Sid    = "ECSPassRole"
