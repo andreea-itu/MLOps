@@ -24,6 +24,9 @@ module "github_actions_app" {
     module.s3_bucket["mlops-postgrade-datastore"].bucket_arn,
   ]
 
+  ecs_cluster_name = var.ecs_cluster_name
+  ecs_service_name = var.ecs_service_name
+
   tags = {
     Environment = var.environment
     Project     = "mlops"

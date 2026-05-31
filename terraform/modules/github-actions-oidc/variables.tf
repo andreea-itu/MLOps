@@ -38,3 +38,15 @@ variable "s3_bucket_name" {
   description = "S3 bucket name."
   type        = string
 }
+
+variable "ecs_cluster_name" {
+  description = "ECS cluster name for deploy workflow (empty disables ECS permissions)."
+  type        = string
+  default     = ""
+}
+
+variable "ecs_service_name" {
+  description = "ECS service name for deploy workflow (empty disables ECS permissions)."
+  type        = string
+  default     = ""
+}
