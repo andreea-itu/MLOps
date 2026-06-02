@@ -47,7 +47,7 @@ jobs:
       data: ${{ steps.filter.outputs.data }}
       docs: ${{ steps.filter.outputs.docs }}
       workflow: ${{ steps.filter.outputs.workflow }}
-      docs_files: ${{ steps.docs_list.outputs.files }}
+      docs_files: ${{ steps.filter.outputs.docs_files }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,6 +56,7 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          list-files: csv
           filters: |
             terraform:
               - 'terraform/**'
@@ -71,18 +72,6 @@ jobs:
               - 'README*'
             workflow:
               - '.github/workflows/**'
-
-      - name: Set changed docs file list
-        if: steps.filter.outputs.docs == 'true'
-        id: docs_list
-        env:
-          FILES: ${{ steps.filter.outputs.docs_files }}
-        run: |
-          {
-            echo 'files<<EOF'
-            echo "${FILES// /$'\n'}"
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
 
   lint-config:
     name: Lint YAML/Markdown
@@ -117,12 +106,12 @@ jobs:
                 type: unix
 
       - name: Lint changed Markdown
-        if: needs.changes.outputs.docs == 'true'
+        if: needs.changes.outputs.docs == 'true' && needs.changes.outputs.docs_files != ''
         uses: DavidAnson/markdownlint-cli2-action@v20
         with:
-          config: .markdownlint-cli2.yamlc
-          globs: |
-            ${{ needs.changes.outputs.docs_files }}
+          config: .markdownlint-cli2.jsonc
+          globs: ${{ needs.changes.outputs.docs_files }}
+          separator: ','
 
   infrastructure:
     name: ${{ github.event_name == 'pull_request' && 'Infrastructure CI (PR)' || 'Infrastructure CI/CD' }}

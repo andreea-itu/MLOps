@@ -2,8 +2,6 @@ environment = "dev"
 aws_region  = "eu-west-1"
 account_id  = "082721030339"
 
-ecr_repository_name = "ecr-app-dev"
-
 s3_buckets = [
   {
     key = "mlops-postgrade-datastore"

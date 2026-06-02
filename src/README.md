@@ -237,7 +237,20 @@ Interactive docs: http://127.0.0.1:8080/docs
 
 ### 5. CI parity
 
-The **Application Build & Release** workflow runs: lint → `dvc pull` → `main.py` → `docker build -t app:ci .` using the root `Dockerfile`. Reproduce failures locally with the same commands from `src/`.
+The **Application Build & Release** workflow ([`app-reusable.yml`](../.github/workflows/app-reusable.yml)) runs from `src/`:
+
+```bash
+poetry run ruff check .
+poetry run ruff format --check .
+poetry run dvc pull
+poetry run python main.py
+poetry export --only main --without-hashes --output requirements.txt   # CI adds export plugin first
+docker build -t app:ci .
+```
+
+On merge to `main`, the **Release Application** job (GitHub environment `dev`) also pushes to ECR as `:<short-sha>` and redeploys ECS: register task definition → `update-service` → wait for stability → log service status. See [../README.md § CI/CD](../README.md#cicd-workflows).
+
+Changes to `src/data.dvc` trigger **Data Verification** ([`data-reusable.yml`](../.github/workflows/data-reusable.yml)); see [../docs/dvc-runbook.md](../docs/dvc-runbook.md) for operational checks.
 
 ## Troubleshooting
 
@@ -251,13 +264,21 @@ The **Application Build & Release** workflow runs: lint → `dvc pull` → `main
 | `/predict` 500 or crash on startup | Ensure `models/model.pkl` exists and is mounted (local) or copied (root `Dockerfile`) |
 | Wrong predictions after retrain | Restart serve container so it reloads `model.pkl` |
 | MLflow model not found in prod | Promote version to **Production**; set `MLFLOW_TRACKING_URI` and registry env vars |
+| MLflow `mlflow-artifacts` / file URI error | Run from `src/`; use `MLFLOW_TRACKING_URI=http://...` with a server, or `rm -rf mlruns` and re-run locally |
 | Compose `train` exits immediately | Check logs: `docker compose logs train`; ensure `data/` is populated |
 
 ## CI/CD (summary)
 
-On merge to `main`, GitHub Actions (see [../README.md](../README.md)) retrains, builds `Dockerfile`, pushes to ECR, and redeploys ECS. You do not need to push images manually for dev unless debugging.
+On merge to `main` (when `src/**` changes), GitHub Actions retrains, builds `Dockerfile`, pushes to ECR (`:<short-sha>`), and redeploys ECS with a stability wait and status logs. You do not need to push images manually for dev unless debugging.
+
+After a successful deploy, find the task public IP and test the API: [../README.md § Accessing the deployed API](../README.md#accessing-the-deployed-api-ecs).
 
 ## Related docs
 
-- [../README.md](../README.md) — Terraform, ECS, GitHub variables, infra troubleshooting  
+- [../docs/ml-application-flow.md](../docs/ml-application-flow.md) — training and inference flow diagrams
+- [../docs/dvc-flow.md](../docs/dvc-flow.md) — DVC data versioning cheat sheet
+- [../docs/pipeline-workflow.md](../docs/pipeline-workflow.md) — CI/CD pipeline flow
+- [../README.md](../README.md) — Terraform, ECS, GitHub variables, infra troubleshooting
+- [../docs/dvc-runbook.md](../docs/dvc-runbook.md) — DVC verification, datastore workflow, CI data checks
+- [../terraform/README.md](../terraform/README.md) — S3 bucket, OIDC IAM, infrastructure outputs
 - [../k8s/README.md](../k8s/README.md) — ECR push and EKS manifests for MLflow-based serving

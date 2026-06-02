@@ -6,7 +6,7 @@ End-to-end MLOps project: versioned training data (DVC + S3), a scikit-learn pip
 |------|----------|---------------|
 | ML code, DVC, Docker (local) | [`src/`](src/) | [src/README.md](src/README.md) |
 | Kubernetes (optional, MLflow registry) | [`k8s/`](k8s/) | [k8s/README.md](k8s/README.md) |
-| AWS infrastructure | [`terraform/`](terraform/) | This file |
+| AWS infrastructure | [`terraform/`](terraform/) | [terraform/README.md](terraform/README.md) |
 
 ## What is implemented today
 
@@ -22,7 +22,7 @@ flowchart LR
     S3[(S3 buckets)]
     ECR[ECR app image]
     ECS[ECS Fargate API]
-    OIDC[GitHub OIDC role]
+    OIDC[GitHub OIDC roles]
   end
   subgraph cicd["GitHub Actions"]
     PR[PR: plan + lint + build]
@@ -38,7 +38,7 @@ flowchart LR
 
 - **Application**: Binary insurance claim classifier; FastAPI serves `GET /` (health) and `POST /predict`.
 - **Data**: DVC tracks `src/data/`; remote default is `s3://mlops-postgrade-datastore-dev/data` (see `src/.dvc/config`).
-- **CI (dev)**: On PR → Terraform plan + app lint/build (no deploy). On merge to `main` → Terraform apply (if `terraform/` changed) + retrain, Docker build, push to ECR, ECS rolling deploy.
+- **CI (dev)**: Path-filtered pipeline on `main`. PR → Terraform fmt/plan (PR comment) + app lint/build (no deploy) + optional DVC check on `data.dvc`. Push to `main` → Terraform apply (manual approval, if `terraform/` changed) + retrain, Docker build, push to ECR (`:<short-sha>`), ECS rolling deploy with stability wait.
 - **CI (prd)**: On PR to `release/**` → plan + verify dev ECR image exists for the commit. Production promote/deploy is implemented in `app-promote-reusable.yml` (copy image dev → prd ECR, update ECS task definition).
 - **Runtime (AWS)**: **ECS Fargate** hosts the API (cheaper than EKS for coursework). **EKS manifests** under `k8s/` are an optional path when using MLflow Model Registry instead of baking `model.pkl` into the image.
 
@@ -47,12 +47,19 @@ flowchart LR
 ```text
 mlops/
 ├── .github/workflows/
-│   ├── dev-pipeline.yml          # main branch: infra + app CI/CD
-│   ├── prd-pipeline.yml          # release/** branches: infra + app verify/promote
+│   ├── dev-pipeline.yml          # main: path-filtered infra + app CI/CD
+│   ├── prd-pipeline.yml          # release/**: infra + app verify/promote
+│   ├── terraform-reusable.yml    # fmt, plan, manual-approval apply (OIDC)
 │   ├── app-reusable.yml          # lint, dvc pull, train, build, ECR, ECS (dev)
-│   └── app-promote-reusable.yml  # verify / promote dev image → prd
+│   ├── app-promote-reusable.yml  # verify / promote dev image → prd
+│   └── data-reusable.yml         # DVC check when src/data.dvc changes
+├── docs/
+│   ├── pipeline-workflow.md      # CI/CD flow diagrams
+│   ├── ml-application-flow.md    # Training and inference flow
+│   ├── dvc-flow.md               # DVC data versioning cheat sheet
+│   └── dvc-runbook.md            # Operational DVC guide
 ├── src/                          # Python app (see src/README.md)
-├── terraform/                    # S3, ECR, ECS, GitHub OIDC
+├── terraform/                    # S3, ECR, ECS, GitHub OIDC (see terraform/README.md)
 ├── k8s/                          # Optional EKS + MLflow serving
 └── README.md                     # This file
 ```
@@ -66,10 +73,10 @@ mlops/
 | **ML pipeline** | `main.py`: ingest → clean → train → evaluate; configured in `src/config.yml`. |
 | **Model artifact** | `src/models/model.pkl` (joblib pipeline: preprocess + SMOTE + classifier). |
 | **MLflow** | Optional experiment tracking and Model Registry; training registers when `MLFLOW_TRACKING_URI` is set; serving can load from registry via `model_loader.py`. |
-| **ECR** | Amazon container registry; CI pushes `:<short-sha>` and `:latest`. |
-| **ECS Fargate** | Serverless containers running the API; GitHub Actions triggers `update-service` after push. |
-| **OIDC** | GitHub Actions assumes an IAM role (no long-lived keys in workflows) using `vars.AWS_ROLE_ARN`. |
-| **IaC** | Terraform modules for S3, ECR, ECS, and the GitHub Actions IAM role. |
+| **ECR** | Amazon container registry. Dev CI pushes `:<short-sha>` only. Prd promote pushes `:<sha>` and `:latest`. Initial ECS task definition references `:latest` in tfvars. |
+| **ECS Fargate** | Serverless containers running the API; CI registers a new task definition and calls `update-service`, then waits for stability. |
+| **OIDC** | GitHub Actions assumes IAM roles via OIDC (no long-lived keys): app workflows use `vars.AWS_ROLE_ARN`; Terraform CI uses `vars.AWS_TERRAFORM_ROLE_ARN`. |
+| **IaC** | Terraform modules for S3, ECR, ECS, and two GitHub OIDC IAM roles (app + Terraform). See [terraform/README.md](terraform/README.md). |
 
 ## Prerequisites
 
@@ -81,64 +88,57 @@ mlops/
 
 ## Infrastructure (Terraform)
 
-### Resources (per environment)
+Terraform provisions S3 (DVC remote), ECR, ECS Fargate, and **two** GitHub OIDC IAM roles:
 
-| Module | Purpose |
-|--------|---------|
-| `s3-bucket` | DVC / artifact storage (`mlops-postgrade-datastore-{env}`, etc.) |
-| `ecr-repository` | Application Docker images (`app` key → `ecr-app-{env}` naming) |
-| `ecs-fargate-service` | FastAPI on Fargate (`app` service) |
-| `github-actions-oidc` | IAM role for CI: ECR push, S3/DVC, ECS deploy |
+| Role | Terraform module | Purpose |
+|------|------------------|---------|
+| `github-actions-mlops-app-dev` | `github-actions-oidc` | App CI: ECR push, S3/DVC, ECS deploy |
+| `github-actions-mlops-terraform-dev` | `github-actions-terraform-oidc` | Terraform fmt/plan/apply in CI |
 
-Environments: `terraform/environments/dev.tfvars`, `prd.tfvars`. Backends: `terraform/backends/dev.conf`, `prd.conf`.
+Environment tfvars (e.g. `environments/dev.tfvars`) also set `ecs_cluster_name` and `ecs_service_name` so the app OIDC role receives scoped ECS IAM permissions.
 
-### Bootstrap (one-time, local)
-
-```bash
-cd terraform
-terraform init -backend-config=backends/dev.conf
-terraform plan -var-file=environments/dev.tfvars
-terraform apply -var-file=environments/dev.tfvars
-```
-
-Useful outputs:
-
-```bash
-terraform output github_actions_app_role_arn
-terraform output ecr_app_repository_name
-terraform output ecs_app_cluster_name
-terraform output ecs_app_service_name
-terraform output bucket_ids
-```
+Full module layout, naming conventions, IAM details, and bootstrap steps: **[terraform/README.md](terraform/README.md)**.
 
 ### GitHub repository configuration
 
-Set **repository or environment variables** (and secrets only where Terraform still uses keys for `plan`/`apply`):
+Set **repository or environment variables** (all workflows use OIDC — no long-lived AWS keys):
 
 | Variable | Example source | Used by |
 |----------|----------------|---------|
-| `AWS_ROLE_ARN` | `terraform output github_actions_app_role_arn` | App workflows (OIDC) |
+| `AWS_ROLE_ARN` | `terraform output github_actions_app_role_arn` | App / data workflows |
+| `AWS_TERRAFORM_ROLE_ARN` | `terraform output github_actions_terraform_role_arn` | `terraform-reusable.yml` |
 | `ECR_REPOSITORY` | `terraform output ecr_app_repository_name` | Build / promote |
 | `ECS_CLUSTER_NAME` | `terraform output ecs_app_cluster_name` | Deploy |
 | `ECS_SERVICE_NAME` | `terraform output ecs_app_service_name` | Deploy |
 | `DEV_ECR_REPOSITORY` | Dev repo name (prd only) | `app-promote-reusable.yml` |
 
-GitHub **environments**: `dev`, `prd` (protection rules optional).
+GitHub **environments**: `dev`, `prd` (Terraform apply on `main` requires manual approval in the `dev` environment).
 
-OIDC trust subjects are defined in `terraform/github_actions_oidc.tf` (adjust `repo:owner/name` if you fork).
+OIDC trust subjects are in `terraform/github_actions_oidc.tf` and `terraform/github_actions_terraform_oidc.tf` (adjust `repo:owner/name` if you fork).
 
 ## CI/CD workflows
 
 ### Dev (`dev-pipeline.yml`)
 
-| Event | Infra | Application |
-|-------|-------|-------------|
-| PR to `main` | `fmt`, `plan` (comment on PR) | `app-reusable.yml` with `deploy: false` |
-| Push to `main` | `apply` if `terraform/**` changed | `app-reusable.yml` with `deploy: true` |
+Path filters control which jobs run (`terraform/**`, `src/**`, `src/data.dvc`, docs, workflow YAML).
 
-Application job (`app-reusable.yml`): Ruff → `dvc pull` → `python main.py` → `docker build` → push ECR `<short-sha>` + `:latest` → register ECS task definition with the new image → `update-service`.
+| Event | Infra | Data | Application |
+|-------|-------|------|-------------|
+| PR to `main` | `terraform-reusable.yml`: fmt, plan (PR comment) | `data-reusable.yml` if `src/data.dvc` changed | `app-reusable.yml` with `deploy: false` |
+| Push to `main` | apply (manual approval) if `terraform/**` changed | DVC check if `data.dvc` changed | `app-reusable.yml` with `deploy: true` |
 
-Image is built from `src/Dockerfile` (includes `models/model.pkl` produced in the same job).
+When both infra and app change in the same push, the application job **waits** for a successful infrastructure apply before deploying.
+
+Application job (`app-reusable.yml`), release step:
+
+1. Ruff lint/format → `dvc pull` → `python main.py` → `docker build`
+2. Push ECR image tagged with git short SHA (`:<short-sha>`)
+3. ECS deploy (when `ECS_CLUSTER_NAME` / `ECS_SERVICE_NAME` are set):
+   - `describe-services` → `describe-task-definition` → swap image → `register-task-definition`
+   - `update-service` (log rollout state from API response)
+   - `wait services-stable` → print final service status
+
+Image is built from `src/Dockerfile` (includes `models/model.pkl` produced in the same job). Release runs in GitHub environment `dev`.
 
 ### Production (`prd-pipeline.yml` + `app-promote-reusable.yml`)
 
@@ -147,7 +147,7 @@ Image is built from `src/Dockerfile` (includes `models/model.pkl` produced in th
 | PR to `release/**` | Terraform plan; **App — Verify** (lint + confirm image exists in dev ECR for commit) |
 | Push to `release/**` | Terraform apply (when configured); promote copies dev image to prd ECR and registers new ECS task definition |
 
-Promote flow does **not** rebuild from source: it `docker pull` dev tag → retag → push prd → update ECS.
+Promote flow does **not** rebuild from source: it `docker pull` dev tag → retag → push prd (`:<sha>` and `:latest`) → update ECS with the same stability wait and status logging as dev.
 
 Manual promote: run **Application Promote** workflow with commit SHA and `release: true`.
 
@@ -266,7 +266,7 @@ Look for `CannotPullContainerError`, image not found, or Python tracebacks (e.g.
 
 **C. ECR image tags vs task definition**
 
-CI registers a new task definition pointing at `:<short-sha>` (and also pushes `:latest`). If the running task still looks stale, compare tags and the active task definition image:
+Dev CI registers a new task definition pointing at `:<short-sha>`. If the running task still looks stale, compare ECR tags and the active task definition image:
 
 ```bash
 aws ecr describe-images \
@@ -335,12 +335,13 @@ If ECS fails but the app is fine locally, see [src/README.md](src/README.md): `d
 |---------|----------------|------------|
 | `dvc pull` / `403` on S3 | AWS credentials or wrong remote URL | `aws sts get-caller-identity`; check `src/.dvc/config` matches `terraform output bucket_ids` |
 | CI: `Set repository variable AWS_ROLE_ARN` | Missing GitHub vars | Apply Terraform; copy outputs to repo/environment variables |
-| CI: OIDC assume role failed | Trust policy `sub` mismatch | Compare workflow log `sub=` with `allowed_subjects` in `github_actions_oidc.tf` |
+| CI: OIDC assume role failed | Trust policy `sub` mismatch | Compare workflow log `sub=` with `allowed_subjects` in `github_actions_oidc.tf` or `github_actions_terraform_oidc.tf` |
+| CI: ECS `AccessDenied` on deploy | App role missing ECS IAM | Apply Terraform; ensure `ecs_cluster_name` / `ecs_service_name` in tfvars; task-def actions need `Resource: "*"` (see [terraform/README.md](terraform/README.md)) |
 | Docker build: `models/` missing | Train skipped locally | Run `python main.py` or `docker compose run --rm train` before `docker build` |
 | API returns 500 on `/predict` | No model in container | Local: mount `models/`; ECS: ensure CI train step ran before image build |
 | ECS deploy OK but old behavior | Task still on old image | ECR tags + task definition image (§ C above); force new deployment (§ E) |
 | `pathspec` / DVC import error | Incompatible `pathspec` 1.x | Use Poetry lockfile (`pathspec < 1.0` pinned in `pyproject.toml`) |
-| Plan/apply fails in GHA | Backend or secrets | Verify `AWS_ACCESS_KEY_ID` / `SECRET` for Terraform jobs; `terraform init -backend-config=...` locally |
+| Plan/apply fails in GHA | OIDC role or backend | Set `AWS_TERRAFORM_ROLE_ARN`; approve manual apply issue; `terraform init -backend-config=...` locally |
 
 ## Optional: EKS + MLflow
 
@@ -348,5 +349,11 @@ For registry-based models (no `model.pkl` in the image), see [k8s/README.md](k8s
 
 ## Further reading
 
+- [docs/pipeline-workflow.md](docs/pipeline-workflow.md) — CI/CD flow diagrams (dev + prd)
+- [docs/ml-application-flow.md](docs/ml-application-flow.md) — training, Docker, inference flow
+- [docs/dvc-flow.md](docs/dvc-flow.md) — Git + DVC + S3 data versioning cheat sheet
 - [src/README.md](src/README.md) — DVC, training, Docker Compose, local API testing, ML troubleshooting
+- [docs/dvc-runbook.md](docs/dvc-runbook.md) — operational DVC verification and datastore workflow
+- [terraform/README.md](terraform/README.md) — modules, OIDC IAM, outputs, environments
 - [terraform/modules/ecs-fargate-service/README.md](terraform/modules/ecs-fargate-service/README.md) — ECS costs and ALB option
+- [terraform/modules/s3-bucket/README.md](terraform/modules/s3-bucket/README.md) — DVC datastore bucket module
