@@ -1,5 +1,18 @@
+"""
+End-to-end training: ingest → clean → train → evaluate, with MLflow tracking.
+
+Run from the src directory:
+  cd src && poetry run python main.py
+
+If MLflow artifact logging fails after using a tracking server, reset local metadata:
+  rm -rf mlruns
+"""
+
 import logging
+import os
 import tempfile
+from pathlib import Path
+
 import mlflow
 import mlflow.sklearn
 from pipelines.ingest import Ingestion
@@ -13,13 +26,30 @@ from utils.helper import load_config
 logging.basicConfig(level=logging.INFO, format="%(asctime)s:%(levelname)s:%(message)s")
 
 
-def mlflow_main():
-    # with open("config.yml", "r") as file:
-    #     config = yaml.safe_load(file)
+def _set_experiment():
+    """Pick a file-backed experiment when not using an MLflow tracking server."""
+    name = "Model Training Experiment"
+    uri = os.environ.get("MLFLOW_TRACKING_URI", "")
+    if uri.startswith(("http://", "https://")):
+        mlflow.set_tracking_uri(uri)
+        mlflow.set_experiment(name)
+        return
+    mlruns = Path(__file__).resolve().parent / "mlruns"
+    mlruns.mkdir(exist_ok=True)
+    mlflow.set_tracking_uri(mlruns.as_uri())
+    client = mlflow.tracking.MlflowClient()
+    exp = client.get_experiment_by_name(name)
+    if exp and exp.artifact_location.startswith("mlflow-artifacts:"):
+        name = f"{name} (local)"
+        if client.get_experiment_by_name(name) is None:
+            client.create_experiment(name)
+    mlflow.set_experiment(name)
 
+
+def mlflow_main():
     config = load_config()
 
-    mlflow.set_experiment("Model Training Experiment")
+    _set_experiment()
 
     with mlflow.start_run() as run:
         # Load data
@@ -66,14 +96,15 @@ def mlflow_main():
         mlflow.log_metric("roc", roc_auc_score)
         mlflow.log_metric("precision", report["weighted avg"]["precision"])
         mlflow.log_metric("recall", report["weighted avg"]["recall"])
+
         try:
             mlflow.sklearn.log_model(
-                trainer.pipeline, name="model", signature=signature
+                trainer.pipeline, artifact_path="model", signature=signature
             )
-            # Register the model when backend supports model registry endpoints.
             model_name = "insurance_model"
             model_uri = f"runs:/{run.info.run_id}/model"
-            mlflow.register_model(model_uri, model_name)
+            if mlflow.get_tracking_uri().startswith(("http://", "https://")):
+                mlflow.register_model(model_uri, model_name)
         except Exception as err:
             logging.warning(
                 "MLflow model logging via API is unavailable; "
