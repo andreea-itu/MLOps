@@ -120,7 +120,7 @@ jobs:
         if: needs.changes.outputs.docs == 'true'
         uses: DavidAnson/markdownlint-cli2-action@v20
         with:
-          config: .markdownlint-cli2.yamlc
+          config: .markdownlint-cli2.jsonc
           globs: |
             ${{ needs.changes.outputs.docs_files }}
 
